@@ -391,48 +391,7 @@ input[type=range]::-moz-range-thumb {
   padding: 1px 5px; font-size: 10px; font-family: 'IBM Plex Mono', monospace;
   color: var(--ink-2);
 }
-.tour-btn {
-  appearance: none; background: var(--cool); color: white;
-  border: none; border-radius: 4px; padding: 6px 14px;
-  font-family: 'IBM Plex Mono', monospace; font-size: 11px; letter-spacing: 0.04em;
-  cursor: pointer; transition: opacity 0.15s, background 0.15s;
-}
-.tour-btn:hover { opacity: 0.85; }
-.tour-btn.active { background: var(--warm); }
 
-/* ===================== TOUR TOOLTIP ===================== */
-.tour-tooltip {
-  position: fixed; bottom: 26px; left: 50%;
-  transform: translateX(-50%);
-  background: var(--ink); color: oklch(0.9 0.006 80);
-  padding: 16px 22px; border-radius: 8px;
-  width: min(540px, 92vw); z-index: 200; line-height: 1.6;
-  box-shadow: 0 12px 40px oklch(0 0 0 / 0.35);
-  transition: opacity 0.3s, transform 0.3s;
-}
-.tour-tooltip.hidden {
-  opacity: 0; pointer-events: none;
-  transform: translateX(-50%) translateY(12px);
-}
-.tt-title {
-  font-family: 'IBM Plex Mono', monospace; font-size: 10px;
-  font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase;
-  color: var(--warm); margin-bottom: 7px;
-}
-#tt-body { font-size: 13.5px; }
-.tt-nav { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
-.tt-progress {
-  font-family: 'IBM Plex Mono', monospace; font-size: 10px;
-  color: oklch(0.55 0.01 80); margin-right: auto;
-}
-.tt-btn {
-  background: oklch(0.28 0.01 80); color: oklch(0.88 0.005 80);
-  border: none; padding: 5px 12px; border-radius: 4px;
-  font-size: 11.5px; cursor: pointer; font-family: 'IBM Plex Mono', monospace;
-}
-.tt-btn:hover { background: oklch(0.38 0.01 80); }
-.tt-btn.primary { background: var(--warm); color: white; }
-.tt-btn:disabled { opacity: 0.35; cursor: default; pointer-events: none; }
 
 /* ===================== LOADING ===================== */
 .loading-overlay {
@@ -537,45 +496,4 @@ input[type=range]::-moz-range-thumb {
   display: flex; align-items: center; gap: 4px; cursor: pointer;
 }
 
-/* ===================== IMPROVEMENT 4: STEPPER PANEL ===================== */
-.stepper-panel {
-  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
-  padding: 8px 12px; background: var(--paper-2); border: 1px solid var(--rule);
-  border-radius: 6px; margin-bottom: 14px;
-}
-.stepper-stage-name {
-  font-family: 'IBM Plex Mono', monospace; font-size: 11px; font-weight: 600;
-  color: var(--warm); letter-spacing: 0.08em; text-transform: uppercase; margin-right: auto;
-}
-.stepper-step-count {
-  font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: var(--ink-3);
-}
 
-/* ===================== IMPROVEMENT 5: PERTURBATION SECTION ===================== */
-.perturb-section {
-  background: white; border: 1px solid var(--rule); border-radius: 8px;
-  box-shadow: var(--shadow); margin-bottom: 18px; overflow: hidden;
-}
-.perturb-body { }
-.perturb-controls {
-  display: flex; gap: 20px; flex-wrap: wrap; padding: 14px 22px;
-  border-bottom: 1px solid var(--rule);
-}
-.perturb-label {
-  display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--ink-2);
-  font-family: 'IBM Plex Mono', monospace;
-}
-.perturb-label input[type=range] { width: 120px; }
-.perturb-compare {
-  display: flex; gap: 20px; padding: 18px 22px;
-  flex-wrap: wrap; justify-content: center;
-}
-.perturb-col {
-  display: flex; flex-direction: column; align-items: center; gap: 8px;
-  flex: 1; min-width: 180px;
-}
-.perturb-col canvas {
-  width: 100%; aspect-ratio: 1; border-radius: 4px;
-  border: 1px solid var(--rule); image-rendering: pixelated; max-width: 200px;
-  display: block;
-}

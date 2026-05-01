@@ -176,20 +176,10 @@ let pinnedChannel      = {};    // stageId → channel index override
 let outputViewMode     = 'seg'; // 'seg' | 'confidence' | 'entropy'
 let lastConfidenceData = null;  // Float32Array, per-pixel confidence 0..1
 
-// --- Improvement 4: forward pass stepper ---
-let stepperActive  = false;
-let stepperStep    = -1;
-let stepperTimer   = null;
+// --- Persistent uploaded image ---
+let uploadedImageUrl   = null;
+let uploadedImageLabel = null;
 
-// --- Improvement 5: perturbation test ---
-let perturbNoiseLevel  = 0;
-let perturbBlurRadius  = 0;
-let perturbBrightness  = 100;
-let perturbTimer       = null;
-let lastPerturbSegIdx  = null;
-let lastPerturbSegW    = 0;
-let lastPerturbSegH    = 0;
-let perturbSectionOpen = false;
 
 // ============================================================
 // DOM REFS
@@ -267,9 +257,12 @@ async function switchMode(mode) {
   $('mode-deeplab').classList.toggle('active', mode === 'deeplab');
   $('mode-bodypix').classList.toggle('active', mode === 'bodypix');
 
-  // Reset view mode to segmentation on mode switch
+  // Reset output state on mode switch
   outputViewMode = 'seg';
   document.querySelectorAll('input[name="view-mode"]').forEach(r => { r.checked = (r.value === 'seg'); });
+  isolatedClass = null;
+  hideBg = false; hideBgOn = false;
+  $('hide-bg-btn').classList.remove('active-warm');
 
   // Load BodyPix model first (if needed) so inference fires immediately after selectPreset
   if (mode === 'bodypix' && !bodypixModel) {
@@ -289,14 +282,6 @@ async function switchMode(mode) {
 // ============================================================
 async function runInference() {
   if (!mobilenetModel) return;
-
-  // Stop stepper if active (new inference invalidates its state)
-  if (stepperActive) stopStepper();
-
-  // Clear perturbation state
-  clearTimeout(perturbTimer);
-  perturbTimer = null;
-  lastPerturbSegIdx = null;
 
   setStatus('', 'Running…');
   animateArrows(true);
@@ -339,11 +324,6 @@ async function runInference() {
   buildLegend();
   updateSkipExplainer();
 
-  // Update perturb baseline if section is open
-  if (perturbSectionOpen) {
-    const orig = $('perturb-orig-canvas');
-    if (orig) drawDecoderStage(orig.getContext('2d'), lastSegIdx, lastSegW, lastSegH, 200, 200, currentMode === 'bodypix');
-  }
 }
 
 
@@ -814,10 +794,10 @@ function drawSegOutputClassic() {
     if (isBodyPix) {
       if (cls >= 0 && cls < BODY_PARTS.length) {
         [r, g, b] = BODY_PARTS[cls].color;
-        a = hideBg ? 255 : 230;
+        a = hideBg ? 255 : Math.round(blendAlpha * 230);
         if (isolatedClass !== null && cls !== isolatedClass) { r = 100; g = 100; b = 100; a = 80; }
       } else {
-        a = hideBg ? 0 : 0;
+        a = 0;
       }
     } else {
       if (cls === 0) {
@@ -898,7 +878,7 @@ document.querySelectorAll('input[name="view-mode"]').forEach(radio => {
   });
 });
 
-// Click-to-inspect pixel
+// Pixel tooltip on hover
 $('output-canvas').addEventListener('mousemove', e => {
   if (!lastSegIdx) return;
   const rect = outputCanvas.getBoundingClientRect();
@@ -907,18 +887,12 @@ $('output-canvas').addEventListener('mousemove', e => {
   const cls = lastSegIdx[py * lastSegW + px];
   const isBodyPix = (currentMode === 'bodypix');
 
-  const tooltip  = $('pixel-tooltip');
-  const swatch   = $('pt-swatch');
-  const label    = $('pt-label');
-
   let name = '—', color = [80, 80, 80];
   if (outputViewMode !== 'seg' && lastConfidenceData) {
     const conf = lastConfidenceData[py * lastSegW + px];
     const val  = outputViewMode === 'entropy' ? (1 - conf) : conf;
-    name = outputViewMode === 'entropy'
-      ? `entropy ${(val * 100).toFixed(0)}%`
-      : `confidence ${(val * 100).toFixed(0)}%`;
-    const v = Math.round(outputViewMode === 'entropy' ? val * 255 : val * 255);
+    name  = outputViewMode === 'entropy' ? `entropy ${(val * 100).toFixed(0)}%` : `confidence ${(val * 100).toFixed(0)}%`;
+    const v = Math.round(val * 255);
     color = outputViewMode === 'entropy' ? heatColor(val).map(Math.round) : [v, v, v];
   } else if (isBodyPix) {
     if (cls >= 0 && cls < BODY_PARTS.length) { name = BODY_PARTS[cls].name; color = BODY_PARTS[cls].color; }
@@ -927,15 +901,13 @@ $('output-canvas').addEventListener('mousemove', e => {
     if (cls >= 0 && cls < currentPalette.length) { name = currentPalette[cls].name; color = currentPalette[cls].color; }
   }
 
-  swatch.style.background = `rgb(${color[0]},${color[1]},${color[2]})`;
-  label.textContent = name;
-  tooltip.style.left = e.clientX + 'px';
-  tooltip.style.top  = e.clientY + 'px';
-  tooltip.classList.remove('hidden');
+  $('pt-swatch').style.background = `rgb(${color[0]},${color[1]},${color[2]})`;
+  $('pt-label').textContent = name;
+  $('pixel-tooltip').style.left = e.clientX + 'px';
+  $('pixel-tooltip').style.top  = e.clientY + 'px';
+  $('pixel-tooltip').classList.remove('hidden');
 });
-$('output-canvas').addEventListener('mouseleave', () => {
-  $('pixel-tooltip').classList.add('hidden');
-});
+$('output-canvas').addEventListener('mouseleave', () => $('pixel-tooltip').classList.add('hidden'));
 
 // Click to isolate/un-isolate a class
 $('output-canvas').addEventListener('click', e => {
@@ -1153,6 +1125,31 @@ function loadImageToCanvas(url, ctx, w, h) {
 
 let buildPresetsReady = Promise.resolve(); // resolved immediately if buildPresets hasn't run
 
+function appendUploadThumb() {
+  if (!uploadedImageUrl) return;
+  const row = $('preset-row');
+  const existing = $('upload-preset-btn');
+  if (existing) existing.remove();
+  const btn = document.createElement('button');
+  btn.title = uploadedImageLabel || 'uploaded image';
+  btn.id = 'upload-preset-btn';
+  const cv = document.createElement('canvas');
+  cv.width = cv.height = 56;
+  btn.appendChild(cv);
+  btn.addEventListener('click', selectUploadedImage);
+  row.appendChild(btn);
+  loadImageToCanvas(uploadedImageUrl, cv.getContext('2d'), 56, 56);
+}
+
+async function selectUploadedImage() {
+  document.querySelectorAll('#preset-row button').forEach(b => b.classList.remove('active'));
+  $('upload-preset-btn').classList.add('active');
+  stopWebcam();
+  await loadImageToCanvas(uploadedImageUrl, inputCtx, 384, 384);
+  $('input-meta').textContent = uploadedImageLabel;
+  await runInference();
+}
+
 function buildPresets() {
   const row = $('preset-row');
   row.innerHTML = '';
@@ -1167,6 +1164,7 @@ function buildPresets() {
     row.appendChild(btn);
     return loadImageToCanvas(p.url, cv.getContext('2d'), 56, 56);
   });
+  appendUploadThumb();
   buildPresetsReady = Promise.all(promises);
   return buildPresetsReady;
 }
@@ -1185,15 +1183,20 @@ $('file-input').addEventListener('change', async e => {
   const file = e.target.files[0];
   if (!file) return;
   stopWebcam();
-  document.querySelectorAll('#preset-row button').forEach(b => b.classList.remove('active'));
   const url = URL.createObjectURL(file);
   const img = new Image();
   img.onload = async () => {
     const s = Math.min(img.width, img.height);
     inputCtx.clearRect(0, 0, 384, 384);
     inputCtx.drawImage(img, (img.width-s)/2, (img.height-s)/2, s, s, 0, 0, 384, 384);
-    $('input-meta').textContent = `upload · ${file.name.slice(0, 20)}`;
     URL.revokeObjectURL(url);
+    // Persist the cropped image for the session
+    uploadedImageUrl   = inputCanvas.toDataURL('image/jpeg', 0.85);
+    uploadedImageLabel = `upload · ${file.name.slice(0, 20)}`;
+    $('input-meta').textContent = uploadedImageLabel;
+    appendUploadThumb();
+    document.querySelectorAll('#preset-row button').forEach(b => b.classList.remove('active'));
+    $('upload-preset-btn').classList.add('active');
     await runInference();
   };
   img.src = url;
@@ -1234,316 +1237,7 @@ function stopWebcam() {
   $('btn-webcam').classList.remove('active-warm');
 }
 
-// ============================================================
-// GUIDED TOUR
-// ============================================================
-const TOUR_STEPS = [
-  {
-    stageId: 'enc-0',
-    title: '① The Input — 384×384 pixels',
-    body: 'This is the raw image before anything happens. Every pixel carries its RGB colour. Segmentation must assign a label to ALL 147,456 pixels — that requires very different architecture than simple classification.',
-  },
-  {
-    stageId: 'enc-2',
-    title: '② Encoder — compressing features',
-    body: 'Each encoder stage halves the resolution and doubles the channels. The model is trading spatial precision for semantic richness. By the bottleneck, it "knows" what objects are present but has nearly forgotten where they are exactly.',
-  },
-  {
-    stageId: 'btn',
-    title: '③ The Bottleneck — most compressed',
-    body: 'Only 24×24 spatial positions remain. Each "pixel" here represents a 16×16 patch of the original image. The model has distilled abstract object identities. Without skip connections the decoder would produce extremely blurry boundaries.',
-  },
-  {
-    stageId: 'dec-3',
-    title: '④ Skip connections — the key innovation',
-    body: 'Look at the curved arcs above the diagram. Each skip connection carries high-resolution encoder features directly to the corresponding decoder stage. This is what makes U-Net recover fine boundaries that the bottleneck lost.',
-  },
-  {
-    stageId: 'dec-1',
-    title: '⑤ Decoder — recovering spatial detail',
-    body: 'Each decoder stage upsamples (×2) and merges the skip connection. The segmentation boundary sharpens at each step. Try clicking "Toggle skip ON/OFF" in the explainer section to see exactly what skip connections contribute.',
-  },
-  {
-    stageId: 'dec-0',
-    title: '⑥ Output mask — every pixel labelled',
-    body: 'Full 384×384 resolution. Every pixel has one of 21 Pascal VOC class labels (or 24 body parts in BodyPix mode). Click any pixel in the output panel to see its class. Click a class in the legend to isolate it.',
-  },
-];
 
-let tourActive = false, tourStep = 0;
-const tourTooltip = $('tour-tooltip');
-const tourBtn     = $('tour-btn');
-
-$('tour-btn').addEventListener('click', () => { if (tourActive) stopTour(); else startTour(); });
-$('tt-prev').addEventListener('click', () => { if (tourStep > 0) { tourStep--; showTourStep(); } });
-$('tt-next').addEventListener('click', () => { if (tourStep < TOUR_STEPS.length - 1) { tourStep++; showTourStep(); } else stopTour(); });
-$('tt-close').addEventListener('click', stopTour);
-
-function startTour() {
-  tourActive = true; tourStep = 0;
-  tourBtn.textContent = '◼ stop tour'; tourBtn.classList.add('active');
-  showTourStep();
-}
-function stopTour() {
-  tourActive = false;
-  tourBtn.textContent = '▶ guided tour'; tourBtn.classList.remove('active');
-  tourTooltip.classList.add('hidden');
-}
-function showTourStep() {
-  if (!tourActive) return;
-  const step = TOUR_STEPS[tourStep];
-  $('tt-title').textContent = step.title;
-  $('tt-body').textContent  = step.body;
-  $('tt-progress').textContent = `step ${tourStep + 1} of ${TOUR_STEPS.length}`;
-  $('tt-prev').disabled = (tourStep === 0);
-  $('tt-next').textContent = tourStep === TOUR_STEPS.length - 1 ? '✓ finish' : 'next →';
-  tourTooltip.classList.remove('hidden');
-  if (step.stageId) {
-    selectStage(step.stageId);
-    const stage = UNET_STAGES.find(s => s.id === step.stageId);
-    if (stage) { $('sdp-name').textContent = stage.label + ' — ' + stage.res; $('sdp-body').textContent = stage.desc; }
-  }
-}
-
-// ============================================================
-// FORWARD PASS STEPPER (Improvement 4)
-// ============================================================
-const STEPPER_DEC_DEFS = [
-  { id: 'dec-3', displayRes: 48,  effectiveRes: 6   },
-  { id: 'dec-2', displayRes: 96,  effectiveRes: 18  },
-  { id: 'dec-1', displayRes: 192, effectiveRes: 56  },
-  { id: 'dec-0', displayRes: 384, effectiveRes: 384 },
-];
-const STEPPER_ENC_IDS = ['enc-0', 'enc-1', 'enc-2', 'enc-3', 'btn'];
-
-function startStepper() {
-  if (!lastSegIdx || !lastEncFeatures || lastEncFeatures.length === 0) {
-    setStatus('error', 'Run inference first');
-    return;
-  }
-  stepperActive = true;
-  stepperStep = 0;
-  $('stepper-panel').style.display = 'flex';
-  $('btn-step-through').classList.add('active-warm');
-  renderStepperFrame(0);
-}
-
-function renderStepperFrame(stepIdx) {
-  selectStage(UNET_STAGES[stepIdx].id);
-  const stage = UNET_STAGES[stepIdx];
-  $('sdp-name').textContent = stage.label + ' — ' + stage.res;
-  $('sdp-body').textContent = stage.desc;
-  $('stepper-stage-name').textContent = stage.label;
-  $('stepper-step-count').textContent = `Stage ${stepIdx + 1} / ${UNET_STAGES.length}`;
-
-  // Animate arrows active up to stepIdx
-  document.querySelectorAll('.unet-arrow').forEach((a, i) => {
-    a.classList.toggle('active', i < stepIdx);
-    a.classList.remove('flowing');
-  });
-
-  const isBodyPix = (currentMode === 'bodypix');
-
-  UNET_STAGES.forEach((s, i) => {
-    const cv = $(`canvas-${s.id}`);
-    if (!cv) return;
-    const ctx = cv.getContext('2d');
-
-    if (i > stepIdx) {
-      // Not yet reached — dark fill
-      const sz = s.displaySize;
-      cv.width = sz; cv.height = sz;
-      ctx.fillStyle = '#0c0c10';
-      ctx.fillRect(0, 0, sz, sz);
-      return;
-    }
-
-    if (s.id === 'enc-0') {
-      cv.width = inputCanvas.width; cv.height = inputCanvas.height;
-      ctx.drawImage(inputCanvas, 0, 0, cv.width, cv.height);
-    } else if (STEPPER_ENC_IDS.includes(s.id) && s.id !== 'enc-0') {
-      const featIdx = STEPPER_ENC_IDS.indexOf(s.id) - 1;
-      const feat = lastEncFeatures[featIdx];
-      if (feat) {
-        const [H, W, C] = feat.shape;
-        cv.width = W; cv.height = H;
-        drawTopFilterHeatmap(ctx, feat.data, H, W, C, pinnedChannel[s.id] ?? null);
-      }
-    } else {
-      const decDef = STEPPER_DEC_DEFS.find(d => d.id === s.id);
-      if (decDef) {
-        cv.width = cv.height = decDef.displayRes;
-        drawDecoderStage(ctx, lastSegIdx, lastSegW, lastSegH,
-          decDef.displayRes, decDef.effectiveRes, isBodyPix);
-      }
-    }
-  });
-
-  $('btn-step-prev').disabled = (stepIdx === 0);
-  $('btn-step-next').textContent = stepIdx === UNET_STAGES.length - 1 ? '✓ finish' : 'next →';
-}
-
-function stopStepper() {
-  clearInterval(stepperTimer); stepperTimer = null;
-  stepperActive = false; stepperStep = -1;
-  $('stepper-panel').style.display = 'none';
-  $('btn-step-through').classList.remove('active-warm');
-  $('btn-play-all').textContent = '▶ play all';
-  if (lastSegIdx) drawUNetStages();
-}
-
-$('btn-step-through').addEventListener('click', () => {
-  if (stepperActive) stopStepper(); else startStepper();
-});
-$('btn-step-prev').addEventListener('click', () => {
-  if (stepperStep > 0) { clearInterval(stepperTimer); stepperTimer = null; $('btn-play-all').textContent = '▶ play all'; renderStepperFrame(--stepperStep); }
-});
-$('btn-step-next').addEventListener('click', () => {
-  clearInterval(stepperTimer); stepperTimer = null; $('btn-play-all').textContent = '▶ play all';
-  if (stepperStep < UNET_STAGES.length - 1) renderStepperFrame(++stepperStep);
-  else stopStepper();
-});
-$('btn-step-close').addEventListener('click', stopStepper);
-$('btn-play-all').addEventListener('click', () => {
-  if (stepperTimer) {
-    clearInterval(stepperTimer); stepperTimer = null;
-    $('btn-play-all').textContent = '▶ play all';
-    return;
-  }
-  if (!stepperActive) startStepper();
-  $('btn-play-all').textContent = '◼ stop';
-  stepperTimer = setInterval(() => {
-    if (stepperStep >= UNET_STAGES.length - 1) {
-      clearInterval(stepperTimer); stepperTimer = null;
-      $('btn-play-all').textContent = '▶ play all';
-      return;
-    }
-    renderStepperFrame(++stepperStep);
-  }, 800);
-});
-
-// ============================================================
-// PERTURBATION TEST (Improvement 5)
-// ============================================================
-function applyPerturbations(sourceCanvas) {
-  const W = sourceCanvas.width, H = sourceCanvas.height;
-  const out = document.createElement('canvas');
-  out.width = W; out.height = H;
-  const ctx = out.getContext('2d');
-
-  // 1. Brightness via CSS filter
-  ctx.filter = `brightness(${perturbBrightness}%)`;
-  ctx.drawImage(sourceCanvas, 0, 0);
-  ctx.filter = 'none';
-
-  // 2. Blur via CSS filter
-  if (perturbBlurRadius > 0) {
-    const tmp = document.createElement('canvas');
-    tmp.width = W; tmp.height = H;
-    const tctx = tmp.getContext('2d');
-    tctx.filter = `blur(${perturbBlurRadius}px)`;
-    tctx.drawImage(out, 0, 0);
-    ctx.clearRect(0, 0, W, H);
-    ctx.drawImage(tmp, 0, 0);
-  }
-
-  // 3. Gaussian noise via manual pixel manipulation
-  if (perturbNoiseLevel > 0) {
-    const imgData = ctx.getImageData(0, 0, W, H);
-    const magnitude = perturbNoiseLevel / 100 * 255;
-    for (let i = 0; i < imgData.data.length; i += 4) {
-      const noise = (Math.random() * 2 - 1) * magnitude;
-      imgData.data[i]     = Math.max(0, Math.min(255, imgData.data[i]     + noise));
-      imgData.data[i + 1] = Math.max(0, Math.min(255, imgData.data[i + 1] + noise));
-      imgData.data[i + 2] = Math.max(0, Math.min(255, imgData.data[i + 2] + noise));
-    }
-    ctx.putImageData(imgData, 0, 0);
-  }
-
-  return out;
-}
-
-async function runPerturbInference() {
-  if (!lastSegIdx || webcamRunning) return;
-  if (currentMode === 'deeplab' ? !deeplabModel : !bodypixModel) return;
-
-  setStatus('', 'Perturbation test…');
-  const perturbedCanvas = applyPerturbations(inputCanvas);
-
-  const prevCanvas = $('perturb-input-canvas');
-  if (prevCanvas) {
-    prevCanvas.width = prevCanvas.height = 200;
-    prevCanvas.getContext('2d').drawImage(perturbedCanvas, 0, 0, 200, 200);
-  }
-
-  try {
-    if (currentMode === 'deeplab') {
-      const result = await deeplabModel.segment(perturbedCanvas);
-      const pal = buildPaletteFromLegend(result.legend);
-      lastPerturbSegIdx = paletteRgbaToIdx(result.segmentationMap, result.width, result.height, pal);
-      lastPerturbSegW = result.width;
-      lastPerturbSegH = result.height;
-    } else {
-      const seg = await bodypixModel.segmentPersonParts(perturbedCanvas, {
-        internalResolution: 'medium',
-        segmentationThreshold: 0.6,
-        maxDetections: 5,
-      });
-      lastPerturbSegIdx = new Int32Array(seg.data);
-      lastPerturbSegW = seg.width;
-      lastPerturbSegH = seg.height;
-    }
-
-    const outCanvas = $('perturb-output-canvas');
-    if (outCanvas && lastPerturbSegIdx) {
-      outCanvas.width = outCanvas.height = 200;
-      drawDecoderStage(outCanvas.getContext('2d'), lastPerturbSegIdx,
-        lastPerturbSegW, lastPerturbSegH, 200, 200, currentMode === 'bodypix');
-    }
-    $('perturb-output-foot').textContent = 'Perturbed model output';
-  } catch (err) {
-    console.error('[perturb]', err);
-  }
-
-  setStatus('ready', `${currentMode === 'deeplab' ? 'ADE20K' : 'BodyPix'} · ${tf.getBackend()}`);
-}
-
-function schedulePerturbInference() {
-  if (webcamRunning) return;
-  clearTimeout(perturbTimer);
-  perturbTimer = setTimeout(runPerturbInference, 500);
-}
-
-// Perturbation section toggle
-$('btn-perturb-toggle').addEventListener('click', () => {
-  perturbSectionOpen = !perturbSectionOpen;
-  $('perturb-body').style.display = perturbSectionOpen ? 'block' : 'none';
-  $('btn-perturb-toggle').textContent = perturbSectionOpen ? '▲ collapse' : '▼ expand';
-  if (perturbSectionOpen && lastSegIdx) {
-    const orig = $('perturb-orig-canvas');
-    if (orig) {
-      orig.width = orig.height = 200;
-      drawDecoderStage(orig.getContext('2d'), lastSegIdx, lastSegW, lastSegH, 200, 200, currentMode === 'bodypix');
-    }
-  }
-  if (!perturbSectionOpen) {
-    clearTimeout(perturbTimer); perturbTimer = null;
-  }
-});
-
-// Perturbation sliders
-[
-  ['perturb-noise',      'perturb-noise-val',      v => { perturbNoiseLevel = v; return v + '%'; }],
-  ['perturb-blur',       'perturb-blur-val',        v => { perturbBlurRadius = v; return v + 'px'; }],
-  ['perturb-brightness', 'perturb-brightness-val',  v => { perturbBrightness = v; return v + '%'; }],
-].forEach(([id, valId, setter]) => {
-  const el = $(id);
-  if (!el) return;
-  el.addEventListener('input', e => {
-    $(valId).textContent = setter(parseFloat(e.target.value));
-  });
-  el.addEventListener('change', schedulePerturbInference);
-});
 
 // ============================================================
 // UTILITIES

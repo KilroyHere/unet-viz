@@ -21,18 +21,6 @@
   </div>
 </div>
 
-<!-- ======================================================= TOUR TOOLTIP -->
-<div class="tour-tooltip hidden" id="tour-tooltip">
-  <div class="tt-title" id="tt-title">Tour Step</div>
-  <div id="tt-body">…</div>
-  <div class="tt-nav">
-    <span class="tt-progress" id="tt-progress">1 / 6</span>
-    <button class="tt-btn" id="tt-prev">← prev</button>
-    <button class="tt-btn primary" id="tt-next">next →</button>
-    <button class="tt-btn" id="tt-close">✕ close</button>
-  </div>
-</div>
-
 <!-- ======================================================= PIXEL TOOLTIP -->
 <div class="pixel-tooltip hidden" id="pixel-tooltip">
   <span class="pt-swatch" id="pt-swatch"></span>
@@ -194,62 +182,6 @@
   <!-- ============================================ CONTROLS BAR -->
   <div class="controls-bar">
     <span class="kbd-hint"><kbd class="kbd">←</kbd><kbd class="kbd">→</kbd> navigate stages</span>
-    <button class="tour-btn" id="tour-btn">▶ guided tour</button>
-    <button class="btn" id="btn-step-through">⇥ step through</button>
-  </div>
-
-  <!-- Stepper panel (hidden until activated) -->
-  <div class="stepper-panel" id="stepper-panel" style="display:none">
-    <span class="stepper-stage-name" id="stepper-stage-name"></span>
-    <span class="stepper-step-count" id="stepper-step-count"></span>
-    <button class="btn small" id="btn-step-prev" disabled>← back</button>
-    <button class="btn small" id="btn-step-next">next →</button>
-    <button class="btn small" id="btn-play-all">▶ play all</button>
-    <button class="btn small" id="btn-step-close">✕ exit</button>
-  </div>
-
-  <!-- ============================================ PERTURBATION TEST -->
-  <div class="perturb-section" id="perturb-section">
-    <div class="section-head">
-      <div>
-        <h3>Robustness Test</h3>
-        <p class="section-lede">Apply noise, blur, or brightness shifts to the input and observe how segmentation changes. Reveals which encoder stages are most sensitive to input corruption.</p>
-      </div>
-      <button class="btn small" id="btn-perturb-toggle">▼ expand</button>
-    </div>
-    <div class="perturb-body" id="perturb-body" style="display:none">
-      <div class="perturb-controls">
-        <label class="perturb-label">Gaussian Noise
-          <input type="range" id="perturb-noise" min="0" max="50" value="0" step="1">
-          <span id="perturb-noise-val">0%</span>
-        </label>
-        <label class="perturb-label">Blur
-          <input type="range" id="perturb-blur" min="0" max="5" value="0" step="0.5">
-          <span id="perturb-blur-val">0px</span>
-        </label>
-        <label class="perturb-label">Brightness
-          <input type="range" id="perturb-brightness" min="50" max="150" value="100" step="5">
-          <span id="perturb-brightness-val">100%</span>
-        </label>
-      </div>
-      <div class="perturb-compare">
-        <div class="perturb-col">
-          <div class="skip-col-head">Original segmentation</div>
-          <canvas id="perturb-orig-canvas" width="200" height="200"></canvas>
-          <div class="skip-col-foot">Baseline output</div>
-        </div>
-        <div class="perturb-col">
-          <div class="skip-col-head">Perturbed input</div>
-          <canvas id="perturb-input-canvas" width="200" height="200"></canvas>
-          <div class="skip-col-foot">After perturbation</div>
-        </div>
-        <div class="perturb-col">
-          <div class="skip-col-head">Perturbed segmentation</div>
-          <canvas id="perturb-output-canvas" width="200" height="200"></canvas>
-          <div class="skip-col-foot" id="perturb-output-foot">Move a slider to run test</div>
-        </div>
-      </div>
-    </div>
   </div>
 
   <!-- ============================================ NOTES -->
