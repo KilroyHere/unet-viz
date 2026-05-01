@@ -146,6 +146,14 @@ const SKIP_PAIRS = [
   { enc: 'enc-3', dec: 'dec-3', color: '#e06070', label: '48×48 features',   active: true },
 ];
 
+// Resolution ladder: same display size (192px), increasing effectiveRes at each decoder stage
+const LADDER_DEFS = [
+  { id: 'ladder-0', effectiveRes: 6   },
+  { id: 'ladder-1', effectiveRes: 18  },
+  { id: 'ladder-2', effectiveRes: 56  },
+  { id: 'ladder-3', effectiveRes: 384 },
+];
+
 // ============================================================
 // STATE
 // ============================================================
@@ -323,6 +331,7 @@ async function runInference() {
   drawSegOutput();
   buildLegend();
   updateSkipExplainer();
+  drawResolutionLadder();
 
 }
 
@@ -635,6 +644,17 @@ function drawDecoderStage(ctx, segIdx, segW, segH, displayRes, effectiveRes, isB
 // Thin wrapper still used by the skip explainer
 function drawResampledSeg(ctx, segIdx, segW, segH, targetRes, isBodyPix) {
   drawDecoderStage(ctx, segIdx, segW, segH, targetRes, targetRes, isBodyPix);
+}
+
+function drawResolutionLadder() {
+  if (!lastSegIdx) return;
+  const isBodyPix = currentMode === 'bodypix';
+  for (const { id, effectiveRes } of LADDER_DEFS) {
+    const cv = $(id);
+    if (!cv) continue;
+    cv.width = cv.height = 192;
+    drawDecoderStage(cv.getContext('2d'), lastSegIdx, lastSegW, lastSegH, 192, effectiveRes, isBodyPix);
+  }
 }
 
 // Black→orange→yellow heat colormap (same as CNN demo)

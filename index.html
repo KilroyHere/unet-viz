@@ -179,6 +179,38 @@
     </div>
   </div>
 
+  <!-- ============================================ RESOLUTION LADDER -->
+  <div class="ladder-section">
+    <div class="section-head">
+      <div>
+        <h3>Decoder resolution ladder</h3>
+        <p class="section-lede">Every panel shows the segmentation at a different decoder stage — all scaled to the same display size. Each step merges one skip connection, recovering the spatial detail that pooling destroyed. Run inference to populate.</p>
+      </div>
+    </div>
+    <div class="ladder-row">
+      <div class="ladder-col">
+        <div class="ladder-col-head">Bottleneck ×2 <span class="ladder-res" style="color:#888">· 6px eff.</span></div>
+        <canvas id="ladder-0" width="192" height="192"></canvas>
+        <div class="ladder-col-foot">Decoder alone — no skip connections. Only coarse class blobs.</div>
+      </div>
+      <div class="ladder-col">
+        <div class="ladder-col-head">+ skip-3 <span class="ladder-res" style="color:#e06070">· 18px eff.</span></div>
+        <canvas id="ladder-1" width="192" height="192"></canvas>
+        <div class="ladder-col-foot">Coarsest skip merged. Large regions begin to separate.</div>
+      </div>
+      <div class="ladder-col">
+        <div class="ladder-col-head">+ skip-2 <span class="ladder-res" style="color:#9b72d4">· 56px eff.</span></div>
+        <canvas id="ladder-2" width="192" height="192"></canvas>
+        <div class="ladder-col-foot">Mid-scale skip added. Object shapes sharpen noticeably.</div>
+      </div>
+      <div class="ladder-col">
+        <div class="ladder-col-head">+ skip-1 <span class="ladder-res" style="color:#4a9eed">· 384px eff.</span></div>
+        <canvas id="ladder-3" width="192" height="192"></canvas>
+        <div class="ladder-col-foot">All skips merged. Crisp pixel-level boundaries restored.</div>
+      </div>
+    </div>
+  </div>
+
   <!-- ============================================ CONTROLS BAR -->
   <div class="controls-bar">
     <span class="kbd-hint"><kbd class="kbd">←</kbd><kbd class="kbd">→</kbd> navigate stages</span>
