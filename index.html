@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>U-Net Segmentation — Interactive Demo</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Serif:ital,wght@0,400;0,600;1,400&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<!-- ======================================================= LOADING OVERLAY -->
+<div class="loading-overlay" id="loading">
+  <div class="loading-card">
+    <h3>Loading segmentation models</h3>
+    <p id="load-detail">Fetching models…</p>
+    <div class="loading-bar"><div class="fill" id="load-fill"></div></div>
+    <div class="loading-substep" id="load-step">Initialising TensorFlow.js…</div>
+  </div>
+</div>
+
+<!-- ======================================================= TOUR TOOLTIP -->
+<div class="tour-tooltip hidden" id="tour-tooltip">
+  <div class="tt-title" id="tt-title">Tour Step</div>
+  <div id="tt-body">…</div>
+  <div class="tt-nav">
+    <span class="tt-progress" id="tt-progress">1 / 6</span>
+    <button class="tt-btn" id="tt-prev">← prev</button>
+    <button class="tt-btn primary" id="tt-next">next →</button>
+    <button class="tt-btn" id="tt-close">✕ close</button>
+  </div>
+</div>
+
+<!-- ======================================================= PIXEL TOOLTIP -->
+<div class="pixel-tooltip hidden" id="pixel-tooltip">
+  <span class="pt-swatch" id="pt-swatch"></span>
+  <span class="pt-label" id="pt-label">—</span>
+</div>
+
+<!-- ======================================================= PAGE -->
+<div class="page">
+
+  <!-- HEADER -->
+  <header class="top">
+    <div>
+      <span class="eyebrow">Interactive demo · semantic segmentation</span>
+      <h1 class="title">What does a <em>U-Net</em> see?</h1>
+      <p class="lede">Upload any photo (or use your webcam) and watch a real segmentation network label every pixel across <strong>150 scene categories</strong>. Explore the full encoder → bottleneck → decoder pipeline, see why skip connections restore spatial detail, and switch to BodyPix mode to segment your own body parts.</p>
+    </div>
+    <div class="header-right">
+      <!-- Mode toggle -->
+      <div class="mode-toggle">
+        <button class="mode-btn active" id="mode-deeplab" data-mode="deeplab">
+          <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><rect x="2" y="2" width="7" height="7" rx="1" fill="currentColor" opacity="0.7"/><rect x="11" y="2" width="7" height="7" rx="1" fill="currentColor" opacity="0.4"/><rect x="2" y="11" width="7" height="7" rx="1" fill="currentColor" opacity="0.4"/><rect x="11" y="11" width="7" height="7" rx="1" fill="currentColor" opacity="0.7"/></svg>
+          <span>ADE20K<br><small>150 scene classes</small></span>
+        </button>
+        <button class="mode-btn" id="mode-bodypix" data-mode="bodypix">
+          <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><circle cx="10" cy="5" r="3" fill="currentColor" opacity="0.8"/><ellipse cx="10" cy="13" rx="5" ry="6" fill="currentColor" opacity="0.5"/></svg>
+          <span>BodyPix<br><small>24 body parts</small></span>
+        </button>
+      </div>
+      <div class="status" id="status"><span class="dot"></span><span id="status-text">Loading…</span></div>
+    </div>
+  </header>
+
+  <!-- ============================================ U-NET ARCHITECTURE -->
+  <div class="unet-section">
+    <div class="section-head">
+      <div>
+        <h2>Encoder → Bottleneck → Decoder</h2>
+        <p class="section-lede">The encoder (left, blue) compresses the image into abstract features — resolution shrinks, channels grow. The decoder (right, orange) expands back to full resolution. Curved arcs are <strong>skip connections</strong> that pass encoder detail directly to the decoder at each scale.</p>
+      </div>
+      <div class="stage-badges">
+        <span class="badge enc-badge">Encoder ↓ downsamples</span>
+        <span class="badge btn-badge">Bottleneck (most compressed)</span>
+        <span class="badge dec-badge">Decoder ↑ upsamples</span>
+        <span class="badge skip-badge">⌒ Skip connections</span>
+      </div>
+    </div>
+
+    <!-- The horizontal stages row + skip connection SVG overlay -->
+    <div class="unet-wrap" id="unet-wrap">
+      <div class="unet-stages" id="unet-stages">
+        <!-- Built by script.js buildUNetDiagram() -->
+      </div>
+      <!-- SVG drawn over the stages to show skip connection arcs -->
+      <svg class="skip-svg" id="skip-svg" aria-hidden="true"></svg>
+    </div>
+
+    <!-- Clicked-stage description panel -->
+    <div class="stage-desc-panel" id="stage-desc-panel">
+      <span class="sdp-name" id="sdp-name">Click any stage above to learn what happens there</span>
+      <span class="sdp-body" id="sdp-body"></span>
+    </div>
+  </div>
+
+  <!-- ============================================ MAIN PANEL -->
+  <div class="main-panel">
+
+    <!-- Input column -->
+    <div class="panel input-panel">
+      <div class="panel-head">
+        <span class="panel-title">Input Image</span>
+        <span class="panel-meta" id="input-meta">—</span>
+      </div>
+      <div class="canvas-wrap">
+        <canvas id="input-canvas" width="384" height="384"></canvas>
+        <video id="webcam" autoplay playsinline muted style="display:none;"></video>
+      </div>
+      <div class="input-controls">
+        <div class="preset-row" id="preset-row"></div>
+        <div class="btn-row">
+          <button class="btn" id="btn-upload">↥ upload</button>
+          <button class="btn" id="btn-webcam">◉ webcam</button>
+          <input type="file" id="file-input" class="file-input" accept="image/*">
+        </div>
+        <div class="hint-text">Presets are real ADE20K dataset photos. Upload your own or try webcam in BodyPix mode.</div>
+      </div>
+    </div>
+
+    <!-- Output column -->
+    <div class="panel output-panel">
+      <div class="panel-head">
+        <span class="panel-title">Segmentation Output</span>
+        <span class="panel-meta" id="pred-time">—</span>
+      </div>
+      <div class="canvas-wrap output-canvas-wrap" id="output-wrap">
+        <canvas id="output-canvas" width="384" height="384"></canvas>
+      </div>
+      <div class="blend-row">
+        <span class="blend-label">original</span>
+        <input id="blend-slider" type="range" min="0" max="1" step="0.02" value="0.7">
+        <span class="blend-label">mask</span>
+        <button class="btn small" id="hide-bg-btn" title="Toggle background class visibility">hide bg</button>
+      </div>
+      <div class="output-hint">Click any pixel to identify its class</div>
+    </div>
+
+    <!-- Legend column -->
+    <div class="panel legend-panel">
+      <div class="panel-head">
+        <span class="panel-title">Detected classes</span>
+        <button class="btn small" id="reset-classes-btn">show all</button>
+      </div>
+      <div class="legend-list" id="legend-list">
+        <div class="legend-empty">Run segmentation to see detected classes</div>
+      </div>
+      <div class="legend-hint">Click a class to isolate it in the mask</div>
+    </div>
+
+  </div><!-- /.main-panel -->
+
+  <!-- ============================================ SKIP CONNECTION EXPLAINER -->
+  <div class="explainer-section">
+    <div class="section-head">
+      <div>
+        <h3>Why do skip connections matter?</h3>
+        <p class="section-lede">The bottleneck is only ~24×24 pixels — the decoder alone produces blurry boundaries. Skip connections concatenate high-resolution encoder features at each scale, recovering the fine spatial detail the decoder needs.</p>
+      </div>
+      <button class="btn" id="toggle-skip-btn">Toggle skip ON/OFF</button>
+    </div>
+    <div class="skip-compare">
+      <div class="skip-col">
+        <div class="skip-col-head">Encoder features (56×56)</div>
+        <canvas id="skip-enc" width="200" height="200"></canvas>
+        <div class="skip-col-foot">Fine-grained, high spatial detail<br>from early encoder stage</div>
+      </div>
+      <div class="skip-col">
+        <div class="skip-col-head" id="skip-right-label">Decoder output</div>
+        <canvas id="skip-right" width="200" height="200"></canvas>
+        <div class="skip-col-foot" id="skip-right-foot">Without skip: blurry, lost edges</div>
+      </div>
+      <div class="skip-col">
+        <div class="skip-col-head">Final segmentation</div>
+        <canvas id="skip-final" width="200" height="200"></canvas>
+        <div class="skip-col-foot">With skip connections: crisp boundaries</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================================ CONTROLS BAR -->
+  <div class="controls-bar">
+    <span class="kbd-hint"><kbd class="kbd">←</kbd><kbd class="kbd">→</kbd> navigate stages</span>
+    <button class="tour-btn" id="tour-btn">▶ guided tour</button>
+  </div>
+
+  <!-- ============================================ NOTES -->
+  <div class="notes">
+    <div class="note">
+      <h4>① Semantic segmentation</h4>
+      <p>Unlike classification (one label per image) or detection (bounding boxes), segmentation assigns a label to every pixel. This lets the model answer "where exactly is the dog?" with pixel precision.</p>
+    </div>
+    <div class="note">
+      <h4>② The U-Net insight</h4>
+      <p>Introduced in 2015 for medical imaging (Ronneberger et al.), U-Net's key innovation is skip connections between encoder and decoder at every resolution level. These preserve the spatial information that pooling destroys.</p>
+    </div>
+    <div class="note">
+      <h4>③ ADE20K vs BodyPix</h4>
+      <p>DeepLab v3+ on ADE20K labels <strong>150 scene categories</strong> — walls, sky, vegetation, furniture, vehicles, appliances, and more. BodyPix segments 24 human body parts in real-time — try it on webcam! Both share the same encoder-decoder principle.</p>
+    </div>
+  </div>
+
+  <div class="footnote">
+    <span>Runs fully in-browser · no server · no API key</span>
+    <span>DeepLab v3+ · ADE20K (150 classes) · BodyPix v2 · MobileNetV2 · TensorFlow.js</span>
+  </div>
+
+</div><!-- /.page -->
+
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.20.0/dist/tf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/deeplab@0.2.1/dist/deeplab.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/body-pix@2.2.0/dist/body-pix.min.js"></script>
+<script src="script.js?v=5"></script>
+</body>
+</html>
