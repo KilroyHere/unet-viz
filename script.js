@@ -141,9 +141,9 @@ const UNET_STAGES = [
 // Which encoder↔decoder pairs to connect with skip arcs (by stage id)
 // Listed outermost→innermost; arc heights are inverted so outermost = tallest arc
 const SKIP_PAIRS = [
-  { enc: 'enc-1', dec: 'dec-1', color: '#4a9eed', label: '192×192 features' },
-  { enc: 'enc-2', dec: 'dec-2', color: '#9b72d4', label: '96×96 features'   },
-  { enc: 'enc-3', dec: 'dec-3', color: '#e06070', label: '48×48 features'   },
+  { enc: 'enc-1', dec: 'dec-1', color: '#4a9eed', label: '192×192 features', active: true },
+  { enc: 'enc-2', dec: 'dec-2', color: '#9b72d4', label: '96×96 features',   active: true },
+  { enc: 'enc-3', dec: 'dec-3', color: '#e06070', label: '48×48 features',   active: true },
 ];
 
 // ============================================================
@@ -163,11 +163,33 @@ let lastEncFeatures = null;     // Array of {data, shape} from MobileNetV2
 let blendAlpha     = 0.7;
 let isolatedClass  = null;      // number | null
 let hideBg         = false;
-let showSkip       = true;      // for the explainer toggle
+let showSkip       = true;      // kept for legacy toggle-all logic
 let activeStageId  = null;      // for keyboard nav
 
 let webcamStream   = null;
 let webcamRunning  = false;
+
+// --- Improvement 1: channel explorer ---
+let pinnedChannel      = {};    // stageId → channel index override
+
+// --- Improvement 3: confidence / entropy ---
+let outputViewMode     = 'seg'; // 'seg' | 'confidence' | 'entropy'
+let lastConfidenceData = null;  // Float32Array, per-pixel confidence 0..1
+
+// --- Improvement 4: forward pass stepper ---
+let stepperActive  = false;
+let stepperStep    = -1;
+let stepperTimer   = null;
+
+// --- Improvement 5: perturbation test ---
+let perturbNoiseLevel  = 0;
+let perturbBlurRadius  = 0;
+let perturbBrightness  = 100;
+let perturbTimer       = null;
+let lastPerturbSegIdx  = null;
+let lastPerturbSegW    = 0;
+let lastPerturbSegH    = 0;
+let perturbSectionOpen = false;
 
 // ============================================================
 // DOM REFS
@@ -245,6 +267,10 @@ async function switchMode(mode) {
   $('mode-deeplab').classList.toggle('active', mode === 'deeplab');
   $('mode-bodypix').classList.toggle('active', mode === 'bodypix');
 
+  // Reset view mode to segmentation on mode switch
+  outputViewMode = 'seg';
+  document.querySelectorAll('input[name="view-mode"]').forEach(r => { r.checked = (r.value === 'seg'); });
+
   // Load BodyPix model first (if needed) so inference fires immediately after selectPreset
   if (mode === 'bodypix' && !bodypixModel) {
     $('loading').classList.remove('hidden');
@@ -263,6 +289,14 @@ async function switchMode(mode) {
 // ============================================================
 async function runInference() {
   if (!mobilenetModel) return;
+
+  // Stop stepper if active (new inference invalidates its state)
+  if (stepperActive) stopStepper();
+
+  // Clear perturbation state
+  clearTimeout(perturbTimer);
+  perturbTimer = null;
+  lastPerturbSegIdx = null;
 
   setStatus('', 'Running…');
   animateArrows(true);
@@ -292,6 +326,9 @@ async function runInference() {
     lastSegH = seg.height;
   }
 
+  // Compute confidence proxy for the confidence/entropy view modes
+  lastConfidenceData = computeConfidenceProxy(lastSegIdx, lastSegW, lastSegH, 2);
+
   const dt = performance.now() - t0;
   animateArrows(false);
   $('pred-time').textContent = `${dt.toFixed(0)} ms`;
@@ -301,6 +338,12 @@ async function runInference() {
   drawSegOutput();
   buildLegend();
   updateSkipExplainer();
+
+  // Update perturb baseline if section is open
+  if (perturbSectionOpen) {
+    const orig = $('perturb-orig-canvas');
+    if (orig) drawDecoderStage(orig.getContext('2d'), lastSegIdx, lastSegW, lastSegH, 200, 200, currentMode === 'bodypix');
+  }
 }
 
 
@@ -359,6 +402,11 @@ function buildUNetDiagram() {
       selectStage(stage.id);
       $('sdp-name').textContent = stage.label + ' — ' + stage.res;
       $('sdp-body').textContent = stage.desc;
+      // Open channel explorer for encoder/bottleneck stages (they have feature data)
+      const encModalIds = ['enc-1', 'enc-2', 'enc-3', 'btn'];
+      if (encModalIds.includes(stage.id) && lastEncFeatures && lastEncFeatures.length > 0) {
+        openChannelModal(stage.id);
+      }
     });
     container.appendChild(div);
   });
@@ -388,7 +436,7 @@ function drawUNetStages() {
     const feat = lastEncFeatures[i];
     const [H, W, C] = feat.shape;
     cv.width = W; cv.height = H;
-    drawTopFilterHeatmap(cv.getContext('2d'), feat.data, H, W, C);
+    drawTopFilterHeatmap(cv.getContext('2d'), feat.data, H, W, C, pinnedChannel[id] ?? null);
   }
 
   // Decoder: show progressive refinement across each upsample stage.
@@ -412,18 +460,22 @@ function drawUNetStages() {
   }
 }
 
-// Draw the single most-activated filter channel at a stage, using the heat colormap
-function drawTopFilterHeatmap(ctx, data, H, W, C) {
-  // Find the channel with max mean activation
-  let bestChan = 0, bestMean = -Infinity;
+// Draw a filter channel at a stage using the heat colormap.
+// channelOverride: if non-null, draw that specific channel; otherwise find the top-activated one.
+function drawTopFilterHeatmap(ctx, data, H, W, C, channelOverride = null) {
   const HW = H * W;
-  for (let c = 0; c < C; c++) {
-    let s = 0;
-    for (let p = 0; p < HW; p++) s += data[p * C + c];
-    const m = s / HW;
-    if (m > bestMean) { bestMean = m; bestChan = c; }
+  let bestChan = 0;
+  if (channelOverride !== null) {
+    bestChan = channelOverride;
+  } else {
+    let bestMean = -Infinity;
+    for (let c = 0; c < C; c++) {
+      let s = 0;
+      for (let p = 0; p < HW; p++) s += data[p * C + c];
+      const m = s / HW;
+      if (m > bestMean) { bestMean = m; bestChan = c; }
+    }
   }
-  // Find max for normalization
   let maxV = 0;
   for (let p = 0; p < HW; p++) {
     const v = data[p * C + bestChan];
@@ -443,6 +495,92 @@ function drawTopFilterHeatmap(ctx, data, H, W, C) {
   }
   ctx.putImageData(imgData, 0, 0);
 }
+
+// ============================================================
+// CHANNEL EXPLORER MODAL (Improvement 1)
+// ============================================================
+const ENC_MODAL_IDS = ['enc-1', 'enc-2', 'enc-3', 'btn'];
+
+function openChannelModal(stageId) {
+  const featIdx = ENC_MODAL_IDS.indexOf(stageId);
+  if (featIdx < 0 || !lastEncFeatures || !lastEncFeatures[featIdx]) return;
+
+  const feat = lastEncFeatures[featIdx];
+  const [H, W, C] = feat.shape;
+  const stage = UNET_STAGES.find(s => s.id === stageId);
+
+  $('cm-title').textContent   = (stage ? stage.label : stageId) + ' — Feature Channels';
+  $('cm-stage-info').textContent = `${H}×${W}×${C} · ${C} channels`;
+
+  // Sort channels by mean activation descending
+  const HW = H * W;
+  const TOP_N = Math.min(C, 64);
+  const means = Array.from({ length: C }, (_, c) => {
+    let s = 0;
+    for (let p = 0; p < HW; p++) s += feat.data[p * C + c];
+    return { c, mean: s / HW };
+  });
+  means.sort((a, b) => b.mean - a.mean);
+  const topChannels = means.slice(0, TOP_N);
+
+  const grid = $('cm-grid');
+  grid.innerHTML = '';
+
+  const currentPin = pinnedChannel[stageId] ?? null;
+
+  requestAnimationFrame(() => {
+    topChannels.forEach(({ c, mean }) => {
+      // Find per-channel max for normalization
+      let maxV = 0;
+      for (let p = 0; p < HW; p++) {
+        const v = feat.data[p * C + c];
+        if (v > maxV) maxV = v;
+      }
+
+      const cell = document.createElement('div');
+      cell.className = 'cm-cell' + (c === currentPin ? ' pinned' : '');
+
+      const cv = document.createElement('canvas');
+      cv.width = W; cv.height = H;
+      drawTopFilterHeatmap(cv.getContext('2d'), feat.data, H, W, C, c);
+
+      const idxLabel = document.createElement('div');
+      idxLabel.className = 'cm-cell-idx';
+      idxLabel.textContent = `ch ${c}`;
+
+      const rangeLabel = document.createElement('div');
+      rangeLabel.className = 'cm-cell-range';
+      rangeLabel.textContent = `μ=${mean.toFixed(2)}`;
+
+      cell.appendChild(cv);
+      cell.appendChild(idxLabel);
+      cell.appendChild(rangeLabel);
+
+      cell.addEventListener('click', () => {
+        pinnedChannel[stageId] = c;
+        drawUNetStages();
+        closeChannelModal();
+      });
+      grid.appendChild(cell);
+    });
+  });
+
+  $('channel-modal-backdrop').style.display = 'flex';
+
+  // Escape key closes modal
+  const onKey = e => { if (e.key === 'Escape') { closeChannelModal(); document.removeEventListener('keydown', onKey); } };
+  document.addEventListener('keydown', onKey);
+}
+
+function closeChannelModal() {
+  $('channel-modal-backdrop').style.display = 'none';
+}
+
+$('cm-close').addEventListener('click', closeChannelModal);
+// Click backdrop (outside modal) also closes
+$('channel-modal-backdrop').addEventListener('click', e => {
+  if (e.target === $('channel-modal-backdrop')) closeChannelModal();
+});
 
 // Draw a decoder stage canvas showing the segmentation as it would appear at
 // that point in the decoder pipeline.
@@ -531,6 +669,32 @@ function heatColor(t) {
 }
 
 // ============================================================
+// CONFIDENCE PROXY (Improvement 3)
+// For each pixel, compute the fraction of a 5×5 neighborhood
+// that shares the same class — high = confident, low = uncertain boundary.
+// ============================================================
+function computeConfidenceProxy(segIdx, W, H, radius) {
+  radius = radius || 2;
+  const conf = new Float32Array(W * H);
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const cls = segIdx[y * W + x];
+      let same = 0, total = 0;
+      for (let dy = -radius; dy <= radius; dy++) {
+        for (let dx = -radius; dx <= radius; dx++) {
+          const ny = y + dy, nx = x + dx;
+          if (ny < 0 || ny >= H || nx < 0 || nx >= W) continue;
+          total++;
+          if (segIdx[ny * W + nx] === cls) same++;
+        }
+      }
+      conf[y * W + x] = same / total;
+    }
+  }
+  return conf;
+}
+
+// ============================================================
 // SKIP CONNECTION SVG
 // ============================================================
 function drawSkipConnections() {
@@ -569,7 +733,7 @@ function drawSkipConnections() {
     path.setAttribute('stroke', color);
     path.setAttribute('stroke-width', '2');
     path.setAttribute('stroke-dasharray', '5 3');
-    path.setAttribute('class', `skip-path${showSkip ? '' : ' inactive'}`);
+    path.setAttribute('class', `skip-path${pair.active ? '' : ' inactive'}`);
     path.setAttribute('id', `skip-path-${pairIdx}`);
     svg.appendChild(path);
 
@@ -581,7 +745,7 @@ function drawSkipConnections() {
     txt.setAttribute('font-size', '9');
     txt.setAttribute('font-family', 'IBM Plex Mono, monospace');
     txt.setAttribute('fill', color);
-    txt.setAttribute('opacity', showSkip ? '1' : '0.2');
+    txt.setAttribute('opacity', pair.active ? '1' : '0.2');
     txt.textContent = label;
     svg.appendChild(txt);
   });
@@ -628,14 +792,20 @@ document.addEventListener('keydown', e => {
 // ============================================================
 function drawSegOutput() {
   if (!lastSegIdx) return;
+
+  if (outputViewMode === 'seg') {
+    drawSegOutputClassic();
+  } else {
+    drawConfidenceOrEntropy(outputViewMode);
+  }
+}
+
+function drawSegOutputClassic() {
   const W = outputCanvas.width, H = outputCanvas.height;
   const isBodyPix = (currentMode === 'bodypix');
-  const classes = isBodyPix ? BODY_PARTS : currentPalette;
 
-  // Draw input image as base
   outputCtx.drawImage(inputCanvas, 0, 0, W, H);
 
-  // Build coloured mask at segmentation resolution
   const imgData = outputCtx.createImageData(lastSegW, lastSegH);
   for (let i = 0; i < lastSegW * lastSegH; i++) {
     const cls = lastSegIdx[i];
@@ -647,7 +817,7 @@ function drawSegOutput() {
         a = hideBg ? 255 : 230;
         if (isolatedClass !== null && cls !== isolatedClass) { r = 100; g = 100; b = 100; a = 80; }
       } else {
-        a = hideBg ? 0 : 0; // background always hidden in BodyPix
+        a = hideBg ? 0 : 0;
       }
     } else {
       if (cls === 0) {
@@ -665,11 +835,41 @@ function drawSegOutput() {
     imgData.data[i * 4 + 3] = a;
   }
 
-  // Upscale the mask to output canvas size
   const tmp = document.createElement('canvas');
   tmp.width = lastSegW; tmp.height = lastSegH;
   tmp.getContext('2d').putImageData(imgData, 0, 0);
+  outputCtx.imageSmoothingEnabled = true;
+  outputCtx.imageSmoothingQuality = 'high';
+  outputCtx.drawImage(tmp, 0, 0, W, H);
+}
 
+function drawConfidenceOrEntropy(mode) {
+  if (!lastConfidenceData) return;
+  const W = outputCanvas.width, H = outputCanvas.height;
+
+  // Draw original image as base
+  outputCtx.drawImage(inputCanvas, 0, 0, W, H);
+
+  const imgData = outputCtx.createImageData(lastSegW, lastSegH);
+  for (let i = 0; i < lastSegW * lastSegH; i++) {
+    const conf = lastConfidenceData[i];
+    const value = mode === 'entropy' ? (1 - conf) : conf;
+    let r, g, b;
+    if (mode === 'entropy') {
+      [r, g, b] = heatColor(value);
+    } else {
+      const v = Math.round(value * 255);
+      r = v; g = v; b = v;
+    }
+    imgData.data[i * 4]     = r;
+    imgData.data[i * 4 + 1] = g;
+    imgData.data[i * 4 + 2] = b;
+    imgData.data[i * 4 + 3] = Math.round(blendAlpha * 230);
+  }
+
+  const tmp = document.createElement('canvas');
+  tmp.width = lastSegW; tmp.height = lastSegH;
+  tmp.getContext('2d').putImageData(imgData, 0, 0);
   outputCtx.imageSmoothingEnabled = true;
   outputCtx.imageSmoothingQuality = 'high';
   outputCtx.drawImage(tmp, 0, 0, W, H);
@@ -690,6 +890,14 @@ $('hide-bg-btn').addEventListener('click', () => {
   drawSegOutput();
 });
 
+// View mode radio buttons (Improvement 3)
+document.querySelectorAll('input[name="view-mode"]').forEach(radio => {
+  radio.addEventListener('change', e => {
+    outputViewMode = e.target.value;
+    drawSegOutput();
+  });
+});
+
 // Click-to-inspect pixel
 $('output-canvas').addEventListener('mousemove', e => {
   if (!lastSegIdx) return;
@@ -704,7 +912,15 @@ $('output-canvas').addEventListener('mousemove', e => {
   const label    = $('pt-label');
 
   let name = '—', color = [80, 80, 80];
-  if (isBodyPix) {
+  if (outputViewMode !== 'seg' && lastConfidenceData) {
+    const conf = lastConfidenceData[py * lastSegW + px];
+    const val  = outputViewMode === 'entropy' ? (1 - conf) : conf;
+    name = outputViewMode === 'entropy'
+      ? `entropy ${(val * 100).toFixed(0)}%`
+      : `confidence ${(val * 100).toFixed(0)}%`;
+    const v = Math.round(outputViewMode === 'entropy' ? val * 255 : val * 255);
+    color = outputViewMode === 'entropy' ? heatColor(val).map(Math.round) : [v, v, v];
+  } else if (isBodyPix) {
     if (cls >= 0 && cls < BODY_PARTS.length) { name = BODY_PARTS[cls].name; color = BODY_PARTS[cls].color; }
     else name = 'background';
   } else {
@@ -835,29 +1051,63 @@ function redrawSkipExplainerRight() {
   canvas.width = canvas.height = 200;
   const ctx = canvas.getContext('2d');
 
-  if (!showSkip) {
-    // Simulate "no skip": bottleneck-only (very coarse 10×10 block grid)
-    drawDecoderStage(ctx, lastSegIdx, lastSegW, lastSegH, 200, 10, currentMode === 'bodypix');
-    // Dark vignette to reinforce "blurry / lost detail" idea
+  const activeCount = SKIP_PAIRS.filter(p => p.active).length;
+  // Map active skip count → effective resolution for the decoder simulation:
+  //   0 active = no skips → very blurry (10 blocks)
+  //   1 active = one skip → coarse (24 blocks)
+  //   2 active = two skips → medium (56 blocks)
+  //   3 active = all skips → full sharpness (120 blocks)
+  const resMap = [10, 24, 56, 120];
+  const effectiveRes = resMap[activeCount];
+
+  drawDecoderStage(ctx, lastSegIdx, lastSegW, lastSegH, 200, effectiveRes, currentMode === 'bodypix');
+
+  if (activeCount === 0) {
     ctx.fillStyle = 'rgba(0,0,0,0.22)';
     ctx.fillRect(0, 0, 200, 200);
-    $('skip-right-label').textContent = 'Without skip connections';
-    $('skip-right-foot').textContent  = 'Decoder bottleneck only: coarse, blurry boundaries';
-  } else {
-    // With skip: 56-block effective resolution (mid-decoder quality, noticeable improvement)
-    drawDecoderStage(ctx, lastSegIdx, lastSegW, lastSegH, 200, 56, currentMode === 'bodypix');
-    $('skip-right-label').textContent = 'With skip connections';
-    $('skip-right-foot').textContent  = 'Skip features restore spatial detail at each decoder stage';
   }
+
+  const labels = [
+    'No skips active — very coarse, blurry boundaries',
+    'One skip active — coarse spatial detail restored',
+    'Two skips active — medium boundary sharpness',
+    'All skips active — full spatial detail recovered',
+  ];
+  const headings = [
+    'Without skip connections',
+    'Skip 3 only (48×48)',
+    'Skips 2–3 (96×96 + 48×48)',
+    'With all skip connections',
+  ];
+  $('skip-right-label').textContent = headings[activeCount];
+  $('skip-right-foot').textContent  = labels[activeCount];
 }
 
+// Individual skip toggles (Improvement 2)
+function toggleSkipPair(pairIdx) {
+  SKIP_PAIRS[pairIdx].active = !SKIP_PAIRS[pairIdx].active;
+  const btn = $(`skip-toggle-${pairIdx}`);
+  if (btn) btn.classList.toggle('active-warm', SKIP_PAIRS[pairIdx].active);
+  drawSkipConnections();
+  if (lastSegIdx) redrawSkipExplainerRight();
+}
+
+[0, 1, 2].forEach(i => {
+  const btn = $(`skip-toggle-${i}`);
+  if (btn) btn.addEventListener('click', () => toggleSkipPair(i));
+});
+
+// "Toggle all" master button
 $('toggle-skip-btn').addEventListener('click', () => {
-  showSkip = !showSkip;
-  $('toggle-skip-btn').textContent = showSkip ? 'Toggle skip ON/OFF' : 'Toggle skip ON/OFF ← (currently OFF)';
-  // Update skip path opacity in SVG
-  document.querySelectorAll('.skip-path').forEach(p => p.classList.toggle('inactive', !showSkip));
-  document.querySelectorAll('.skip-svg text').forEach(t => t.setAttribute('opacity', showSkip ? '0.8' : '0.2'));
-  redrawSkipExplainerRight();
+  const allOn = SKIP_PAIRS.every(p => p.active);
+  SKIP_PAIRS.forEach((p, i) => {
+    p.active = !allOn;
+    const btn = $(`skip-toggle-${i}`);
+    if (btn) btn.classList.toggle('active-warm', p.active);
+  });
+  showSkip = !allOn; // keep legacy state in sync
+  drawSkipConnections();
+  if (lastSegIdx) redrawSkipExplainerRight();
 });
 
 // ============================================================
@@ -1054,6 +1304,246 @@ function showTourStep() {
     if (stage) { $('sdp-name').textContent = stage.label + ' — ' + stage.res; $('sdp-body').textContent = stage.desc; }
   }
 }
+
+// ============================================================
+// FORWARD PASS STEPPER (Improvement 4)
+// ============================================================
+const STEPPER_DEC_DEFS = [
+  { id: 'dec-3', displayRes: 48,  effectiveRes: 6   },
+  { id: 'dec-2', displayRes: 96,  effectiveRes: 18  },
+  { id: 'dec-1', displayRes: 192, effectiveRes: 56  },
+  { id: 'dec-0', displayRes: 384, effectiveRes: 384 },
+];
+const STEPPER_ENC_IDS = ['enc-0', 'enc-1', 'enc-2', 'enc-3', 'btn'];
+
+function startStepper() {
+  if (!lastSegIdx || !lastEncFeatures || lastEncFeatures.length === 0) {
+    setStatus('error', 'Run inference first');
+    return;
+  }
+  stepperActive = true;
+  stepperStep = 0;
+  $('stepper-panel').style.display = 'flex';
+  $('btn-step-through').classList.add('active-warm');
+  renderStepperFrame(0);
+}
+
+function renderStepperFrame(stepIdx) {
+  selectStage(UNET_STAGES[stepIdx].id);
+  const stage = UNET_STAGES[stepIdx];
+  $('sdp-name').textContent = stage.label + ' — ' + stage.res;
+  $('sdp-body').textContent = stage.desc;
+  $('stepper-stage-name').textContent = stage.label;
+  $('stepper-step-count').textContent = `Stage ${stepIdx + 1} / ${UNET_STAGES.length}`;
+
+  // Animate arrows active up to stepIdx
+  document.querySelectorAll('.unet-arrow').forEach((a, i) => {
+    a.classList.toggle('active', i < stepIdx);
+    a.classList.remove('flowing');
+  });
+
+  const isBodyPix = (currentMode === 'bodypix');
+
+  UNET_STAGES.forEach((s, i) => {
+    const cv = $(`canvas-${s.id}`);
+    if (!cv) return;
+    const ctx = cv.getContext('2d');
+
+    if (i > stepIdx) {
+      // Not yet reached — dark fill
+      const sz = s.displaySize;
+      cv.width = sz; cv.height = sz;
+      ctx.fillStyle = '#0c0c10';
+      ctx.fillRect(0, 0, sz, sz);
+      return;
+    }
+
+    if (s.id === 'enc-0') {
+      cv.width = inputCanvas.width; cv.height = inputCanvas.height;
+      ctx.drawImage(inputCanvas, 0, 0, cv.width, cv.height);
+    } else if (STEPPER_ENC_IDS.includes(s.id) && s.id !== 'enc-0') {
+      const featIdx = STEPPER_ENC_IDS.indexOf(s.id) - 1;
+      const feat = lastEncFeatures[featIdx];
+      if (feat) {
+        const [H, W, C] = feat.shape;
+        cv.width = W; cv.height = H;
+        drawTopFilterHeatmap(ctx, feat.data, H, W, C, pinnedChannel[s.id] ?? null);
+      }
+    } else {
+      const decDef = STEPPER_DEC_DEFS.find(d => d.id === s.id);
+      if (decDef) {
+        cv.width = cv.height = decDef.displayRes;
+        drawDecoderStage(ctx, lastSegIdx, lastSegW, lastSegH,
+          decDef.displayRes, decDef.effectiveRes, isBodyPix);
+      }
+    }
+  });
+
+  $('btn-step-prev').disabled = (stepIdx === 0);
+  $('btn-step-next').textContent = stepIdx === UNET_STAGES.length - 1 ? '✓ finish' : 'next →';
+}
+
+function stopStepper() {
+  clearInterval(stepperTimer); stepperTimer = null;
+  stepperActive = false; stepperStep = -1;
+  $('stepper-panel').style.display = 'none';
+  $('btn-step-through').classList.remove('active-warm');
+  $('btn-play-all').textContent = '▶ play all';
+  if (lastSegIdx) drawUNetStages();
+}
+
+$('btn-step-through').addEventListener('click', () => {
+  if (stepperActive) stopStepper(); else startStepper();
+});
+$('btn-step-prev').addEventListener('click', () => {
+  if (stepperStep > 0) { clearInterval(stepperTimer); stepperTimer = null; $('btn-play-all').textContent = '▶ play all'; renderStepperFrame(--stepperStep); }
+});
+$('btn-step-next').addEventListener('click', () => {
+  clearInterval(stepperTimer); stepperTimer = null; $('btn-play-all').textContent = '▶ play all';
+  if (stepperStep < UNET_STAGES.length - 1) renderStepperFrame(++stepperStep);
+  else stopStepper();
+});
+$('btn-step-close').addEventListener('click', stopStepper);
+$('btn-play-all').addEventListener('click', () => {
+  if (stepperTimer) {
+    clearInterval(stepperTimer); stepperTimer = null;
+    $('btn-play-all').textContent = '▶ play all';
+    return;
+  }
+  if (!stepperActive) startStepper();
+  $('btn-play-all').textContent = '◼ stop';
+  stepperTimer = setInterval(() => {
+    if (stepperStep >= UNET_STAGES.length - 1) {
+      clearInterval(stepperTimer); stepperTimer = null;
+      $('btn-play-all').textContent = '▶ play all';
+      return;
+    }
+    renderStepperFrame(++stepperStep);
+  }, 800);
+});
+
+// ============================================================
+// PERTURBATION TEST (Improvement 5)
+// ============================================================
+function applyPerturbations(sourceCanvas) {
+  const W = sourceCanvas.width, H = sourceCanvas.height;
+  const out = document.createElement('canvas');
+  out.width = W; out.height = H;
+  const ctx = out.getContext('2d');
+
+  // 1. Brightness via CSS filter
+  ctx.filter = `brightness(${perturbBrightness}%)`;
+  ctx.drawImage(sourceCanvas, 0, 0);
+  ctx.filter = 'none';
+
+  // 2. Blur via CSS filter
+  if (perturbBlurRadius > 0) {
+    const tmp = document.createElement('canvas');
+    tmp.width = W; tmp.height = H;
+    const tctx = tmp.getContext('2d');
+    tctx.filter = `blur(${perturbBlurRadius}px)`;
+    tctx.drawImage(out, 0, 0);
+    ctx.clearRect(0, 0, W, H);
+    ctx.drawImage(tmp, 0, 0);
+  }
+
+  // 3. Gaussian noise via manual pixel manipulation
+  if (perturbNoiseLevel > 0) {
+    const imgData = ctx.getImageData(0, 0, W, H);
+    const magnitude = perturbNoiseLevel / 100 * 255;
+    for (let i = 0; i < imgData.data.length; i += 4) {
+      const noise = (Math.random() * 2 - 1) * magnitude;
+      imgData.data[i]     = Math.max(0, Math.min(255, imgData.data[i]     + noise));
+      imgData.data[i + 1] = Math.max(0, Math.min(255, imgData.data[i + 1] + noise));
+      imgData.data[i + 2] = Math.max(0, Math.min(255, imgData.data[i + 2] + noise));
+    }
+    ctx.putImageData(imgData, 0, 0);
+  }
+
+  return out;
+}
+
+async function runPerturbInference() {
+  if (!lastSegIdx || webcamRunning) return;
+  if (currentMode === 'deeplab' ? !deeplabModel : !bodypixModel) return;
+
+  setStatus('', 'Perturbation test…');
+  const perturbedCanvas = applyPerturbations(inputCanvas);
+
+  const prevCanvas = $('perturb-input-canvas');
+  if (prevCanvas) {
+    prevCanvas.width = prevCanvas.height = 200;
+    prevCanvas.getContext('2d').drawImage(perturbedCanvas, 0, 0, 200, 200);
+  }
+
+  try {
+    if (currentMode === 'deeplab') {
+      const result = await deeplabModel.segment(perturbedCanvas);
+      const pal = buildPaletteFromLegend(result.legend);
+      lastPerturbSegIdx = paletteRgbaToIdx(result.segmentationMap, result.width, result.height, pal);
+      lastPerturbSegW = result.width;
+      lastPerturbSegH = result.height;
+    } else {
+      const seg = await bodypixModel.segmentPersonParts(perturbedCanvas, {
+        internalResolution: 'medium',
+        segmentationThreshold: 0.6,
+        maxDetections: 5,
+      });
+      lastPerturbSegIdx = new Int32Array(seg.data);
+      lastPerturbSegW = seg.width;
+      lastPerturbSegH = seg.height;
+    }
+
+    const outCanvas = $('perturb-output-canvas');
+    if (outCanvas && lastPerturbSegIdx) {
+      outCanvas.width = outCanvas.height = 200;
+      drawDecoderStage(outCanvas.getContext('2d'), lastPerturbSegIdx,
+        lastPerturbSegW, lastPerturbSegH, 200, 200, currentMode === 'bodypix');
+    }
+    $('perturb-output-foot').textContent = 'Perturbed model output';
+  } catch (err) {
+    console.error('[perturb]', err);
+  }
+
+  setStatus('ready', `${currentMode === 'deeplab' ? 'ADE20K' : 'BodyPix'} · ${tf.getBackend()}`);
+}
+
+function schedulePerturbInference() {
+  if (webcamRunning) return;
+  clearTimeout(perturbTimer);
+  perturbTimer = setTimeout(runPerturbInference, 500);
+}
+
+// Perturbation section toggle
+$('btn-perturb-toggle').addEventListener('click', () => {
+  perturbSectionOpen = !perturbSectionOpen;
+  $('perturb-body').style.display = perturbSectionOpen ? 'block' : 'none';
+  $('btn-perturb-toggle').textContent = perturbSectionOpen ? '▲ collapse' : '▼ expand';
+  if (perturbSectionOpen && lastSegIdx) {
+    const orig = $('perturb-orig-canvas');
+    if (orig) {
+      orig.width = orig.height = 200;
+      drawDecoderStage(orig.getContext('2d'), lastSegIdx, lastSegW, lastSegH, 200, 200, currentMode === 'bodypix');
+    }
+  }
+  if (!perturbSectionOpen) {
+    clearTimeout(perturbTimer); perturbTimer = null;
+  }
+});
+
+// Perturbation sliders
+[
+  ['perturb-noise',      'perturb-noise-val',      v => { perturbNoiseLevel = v; return v + '%'; }],
+  ['perturb-blur',       'perturb-blur-val',        v => { perturbBlurRadius = v; return v + 'px'; }],
+  ['perturb-brightness', 'perturb-brightness-val',  v => { perturbBrightness = v; return v + '%'; }],
+].forEach(([id, valId, setter]) => {
+  const el = $(id);
+  if (!el) return;
+  el.addEventListener('input', e => {
+    $(valId).textContent = setter(parseFloat(e.target.value));
+  });
+  el.addEventListener('change', schedulePerturbInference);
+});
 
 // ============================================================
 // UTILITIES

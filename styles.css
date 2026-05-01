@@ -473,3 +473,109 @@ input[type=range]::-moz-range-thumb {
   font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; color: var(--ink-3);
   display: flex; justify-content: space-between; flex-wrap: wrap; gap: 10px;
 }
+
+/* ===================== IMPROVEMENT 1: CHANNEL MODAL ===================== */
+#channel-modal-backdrop {
+  position: fixed; inset: 0; background: oklch(0 0 0 / 0.55);
+  z-index: 400; display: flex; align-items: center; justify-content: center;
+  backdrop-filter: blur(3px);
+}
+#channel-modal {
+  background: white; border-radius: 10px; border: 1px solid var(--rule);
+  box-shadow: 0 24px 60px oklch(0 0 0 / 0.3);
+  width: min(860px, 96vw); max-height: 85vh;
+  display: flex; flex-direction: column; overflow: hidden;
+}
+.cm-header {
+  display: flex; align-items: center; gap: 12px; padding: 14px 18px;
+  border-bottom: 1px solid var(--rule); flex-shrink: 0;
+}
+.cm-title {
+  font-family: 'IBM Plex Mono', monospace; font-size: 11px;
+  font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; color: var(--warm);
+}
+.cm-stage-info { font-size: 12px; color: var(--ink-3); margin-right: auto; }
+.cm-hint {
+  padding: 7px 18px; font-size: 11.5px; color: var(--ink-3);
+  border-bottom: 1px solid var(--rule); flex-shrink: 0;
+}
+.cm-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(72px, 1fr));
+  gap: 8px; padding: 14px 18px; overflow-y: auto;
+}
+.cm-cell {
+  display: flex; flex-direction: column; align-items: center; gap: 3px;
+  cursor: pointer; border: 1.5px solid transparent; border-radius: 5px; padding: 4px;
+  transition: border-color 0.1s, background 0.1s;
+}
+.cm-cell:hover { background: var(--paper-2); border-color: var(--warm); }
+.cm-cell.pinned { border-color: var(--warm); background: var(--warm-soft); }
+.cm-cell canvas { width: 56px; height: 56px; image-rendering: pixelated; border-radius: 3px; display: block; }
+.cm-cell-idx {
+  font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: var(--ink-3);
+}
+.cm-cell-range {
+  font-family: 'IBM Plex Mono', monospace; font-size: 8.5px; color: var(--ink-3); text-align: center;
+}
+
+/* ===================== IMPROVEMENT 2: PER-SKIP TOGGLES ===================== */
+.skip-toggle-group {
+  display: flex; gap: 5px; flex-wrap: wrap; align-items: center;
+}
+
+/* ===================== IMPROVEMENT 3: VIEW MODE ROW ===================== */
+.view-mode-row {
+  display: flex; align-items: center; gap: 12px; padding: 6px 12px;
+  border-top: 1px solid var(--rule); flex-wrap: wrap;
+}
+.view-mode-label {
+  font-family: 'IBM Plex Mono', monospace; font-size: 10px;
+  color: var(--ink-3); letter-spacing: 0.08em; text-transform: uppercase; flex-shrink: 0;
+}
+.view-radio {
+  font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: var(--ink-2);
+  display: flex; align-items: center; gap: 4px; cursor: pointer;
+}
+
+/* ===================== IMPROVEMENT 4: STEPPER PANEL ===================== */
+.stepper-panel {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 8px 12px; background: var(--paper-2); border: 1px solid var(--rule);
+  border-radius: 6px; margin-bottom: 14px;
+}
+.stepper-stage-name {
+  font-family: 'IBM Plex Mono', monospace; font-size: 11px; font-weight: 600;
+  color: var(--warm); letter-spacing: 0.08em; text-transform: uppercase; margin-right: auto;
+}
+.stepper-step-count {
+  font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: var(--ink-3);
+}
+
+/* ===================== IMPROVEMENT 5: PERTURBATION SECTION ===================== */
+.perturb-section {
+  background: white; border: 1px solid var(--rule); border-radius: 8px;
+  box-shadow: var(--shadow); margin-bottom: 18px; overflow: hidden;
+}
+.perturb-body { }
+.perturb-controls {
+  display: flex; gap: 20px; flex-wrap: wrap; padding: 14px 22px;
+  border-bottom: 1px solid var(--rule);
+}
+.perturb-label {
+  display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--ink-2);
+  font-family: 'IBM Plex Mono', monospace;
+}
+.perturb-label input[type=range] { width: 120px; }
+.perturb-compare {
+  display: flex; gap: 20px; padding: 18px 22px;
+  flex-wrap: wrap; justify-content: center;
+}
+.perturb-col {
+  display: flex; flex-direction: column; align-items: center; gap: 8px;
+  flex: 1; min-width: 180px;
+}
+.perturb-col canvas {
+  width: 100%; aspect-ratio: 1; border-radius: 4px;
+  border: 1px solid var(--rule); image-rendering: pixelated; max-width: 200px;
+  display: block;
+}

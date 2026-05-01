@@ -129,6 +129,12 @@
       <div class="canvas-wrap output-canvas-wrap" id="output-wrap">
         <canvas id="output-canvas" width="384" height="384"></canvas>
       </div>
+      <div class="view-mode-row">
+        <span class="view-mode-label">View</span>
+        <label class="view-radio"><input type="radio" name="view-mode" value="seg" checked> Segmentation</label>
+        <label class="view-radio"><input type="radio" name="view-mode" value="confidence"> Confidence</label>
+        <label class="view-radio"><input type="radio" name="view-mode" value="entropy"> Entropy</label>
+      </div>
       <div class="blend-row">
         <span class="blend-label">original</span>
         <input id="blend-slider" type="range" min="0" max="1" step="0.02" value="0.7">
@@ -159,7 +165,12 @@
         <h3>Why do skip connections matter?</h3>
         <p class="section-lede">The bottleneck is only ~24×24 pixels — the decoder alone produces blurry boundaries. Skip connections concatenate high-resolution encoder features at each scale, recovering the fine spatial detail the decoder needs.</p>
       </div>
-      <button class="btn" id="toggle-skip-btn">Toggle skip ON/OFF</button>
+      <div class="skip-toggle-group">
+        <button class="btn small active-warm" id="skip-toggle-0" title="Toggle 192×192 skip (Enc-1 ↔ Dec-1)" style="border-color:#4a9eed">skip-1 · 192px</button>
+        <button class="btn small active-warm" id="skip-toggle-1" title="Toggle 96×96 skip (Enc-2 ↔ Dec-2)" style="border-color:#9b72d4">skip-2 · 96px</button>
+        <button class="btn small active-warm" id="skip-toggle-2" title="Toggle 48×48 skip (Enc-3 ↔ Dec-3)" style="border-color:#e06070">skip-3 · 48px</button>
+        <button class="btn small" id="toggle-skip-btn">toggle all</button>
+      </div>
     </div>
     <div class="skip-compare">
       <div class="skip-col">
@@ -184,6 +195,61 @@
   <div class="controls-bar">
     <span class="kbd-hint"><kbd class="kbd">←</kbd><kbd class="kbd">→</kbd> navigate stages</span>
     <button class="tour-btn" id="tour-btn">▶ guided tour</button>
+    <button class="btn" id="btn-step-through">⇥ step through</button>
+  </div>
+
+  <!-- Stepper panel (hidden until activated) -->
+  <div class="stepper-panel" id="stepper-panel" style="display:none">
+    <span class="stepper-stage-name" id="stepper-stage-name"></span>
+    <span class="stepper-step-count" id="stepper-step-count"></span>
+    <button class="btn small" id="btn-step-prev" disabled>← back</button>
+    <button class="btn small" id="btn-step-next">next →</button>
+    <button class="btn small" id="btn-play-all">▶ play all</button>
+    <button class="btn small" id="btn-step-close">✕ exit</button>
+  </div>
+
+  <!-- ============================================ PERTURBATION TEST -->
+  <div class="perturb-section" id="perturb-section">
+    <div class="section-head">
+      <div>
+        <h3>Robustness Test</h3>
+        <p class="section-lede">Apply noise, blur, or brightness shifts to the input and observe how segmentation changes. Reveals which encoder stages are most sensitive to input corruption.</p>
+      </div>
+      <button class="btn small" id="btn-perturb-toggle">▼ expand</button>
+    </div>
+    <div class="perturb-body" id="perturb-body" style="display:none">
+      <div class="perturb-controls">
+        <label class="perturb-label">Gaussian Noise
+          <input type="range" id="perturb-noise" min="0" max="50" value="0" step="1">
+          <span id="perturb-noise-val">0%</span>
+        </label>
+        <label class="perturb-label">Blur
+          <input type="range" id="perturb-blur" min="0" max="5" value="0" step="0.5">
+          <span id="perturb-blur-val">0px</span>
+        </label>
+        <label class="perturb-label">Brightness
+          <input type="range" id="perturb-brightness" min="50" max="150" value="100" step="5">
+          <span id="perturb-brightness-val">100%</span>
+        </label>
+      </div>
+      <div class="perturb-compare">
+        <div class="perturb-col">
+          <div class="skip-col-head">Original segmentation</div>
+          <canvas id="perturb-orig-canvas" width="200" height="200"></canvas>
+          <div class="skip-col-foot">Baseline output</div>
+        </div>
+        <div class="perturb-col">
+          <div class="skip-col-head">Perturbed input</div>
+          <canvas id="perturb-input-canvas" width="200" height="200"></canvas>
+          <div class="skip-col-foot">After perturbation</div>
+        </div>
+        <div class="perturb-col">
+          <div class="skip-col-head">Perturbed segmentation</div>
+          <canvas id="perturb-output-canvas" width="200" height="200"></canvas>
+          <div class="skip-col-foot" id="perturb-output-foot">Move a slider to run test</div>
+        </div>
+      </div>
+    </div>
   </div>
 
   <!-- ============================================ NOTES -->
@@ -208,6 +274,19 @@
   </div>
 
 </div><!-- /.page -->
+
+<!-- ============================================ CHANNEL MODAL -->
+<div id="channel-modal-backdrop" style="display:none">
+  <div id="channel-modal">
+    <div class="cm-header">
+      <span class="cm-title" id="cm-title">Feature Channels</span>
+      <span class="cm-stage-info" id="cm-stage-info"></span>
+      <button class="btn small" id="cm-close">✕ close</button>
+    </div>
+    <div class="cm-hint">Click a channel thumbnail to pin it as the stage's thumbnail. Sorted by mean activation.</div>
+    <div class="cm-grid" id="cm-grid"></div>
+  </div>
+</div>
 
 <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.20.0/dist/tf.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/deeplab@0.2.1/dist/deeplab.min.js"></script>
