@@ -170,7 +170,6 @@ let lastEncFeatures = null;     // Array of {data, shape} from MobileNetV2
 
 let blendAlpha     = 0.7;
 let isolatedClass  = null;      // number | null
-let hideBg         = false;
 let showSkip       = true;      // kept for legacy toggle-all logic
 let activeStageId  = null;      // for keyboard nav
 
@@ -188,6 +187,19 @@ let lastConfidenceData = null;  // Float32Array, per-pixel confidence 0..1
 let uploadedImageUrl   = null;
 let uploadedImageLabel = null;
 
+const OUTPUT_MODE_BLURBS = {
+  deeplab: {
+    seg: 'Segmentation: each pixel is colored by its predicted ADE20K scene class.',
+    confidence: 'Confidence: brighter pixels indicate stronger local agreement in class labels.',
+    entropy: 'Entropy: warmer colors highlight uncertain or mixed boundaries between classes.',
+  },
+  bodypix: {
+    seg: 'Segmentation: each pixel is colored by its predicted body-part label.',
+    confidence: 'Confidence: brighter pixels indicate stronger local agreement in body-part labels.',
+    entropy: 'Entropy: warmer colors highlight uncertain transitions between body parts.',
+  },
+};
+
 
 // ============================================================
 // DOM REFS
@@ -198,6 +210,13 @@ const outputCanvas = $('output-canvas');
 const inputCtx     = inputCanvas.getContext('2d');
 const outputCtx    = outputCanvas.getContext('2d');
 const webcamEl     = $('webcam');
+
+function updateOutputModeBlurb() {
+  const blurb = $('output-mode-blurb');
+  if (!blurb) return;
+  const modeBlurbs = OUTPUT_MODE_BLURBS[currentMode] || OUTPUT_MODE_BLURBS.deeplab;
+  blurb.textContent = modeBlurbs[outputViewMode] || modeBlurbs.seg;
+}
 
 // BOOT is deferred to end of file so all const declarations are initialised first.
 
@@ -264,13 +283,13 @@ async function switchMode(mode) {
   currentMode = mode;
   $('mode-deeplab').classList.toggle('active', mode === 'deeplab');
   $('mode-bodypix').classList.toggle('active', mode === 'bodypix');
+  updateDecoderLede();
 
   // Reset output state on mode switch
   outputViewMode = 'seg';
   document.querySelectorAll('input[name="view-mode"]').forEach(r => { r.checked = (r.value === 'seg'); });
   isolatedClass = null;
-  hideBg = false; hideBgOn = false;
-  $('hide-bg-btn').classList.remove('active-warm');
+  updateOutputModeBlurb();
 
   // Load BodyPix model first (if needed) so inference fires immediately after selectPreset
   if (mode === 'bodypix' && !bodypixModel) {
@@ -332,6 +351,7 @@ async function runInference() {
   buildLegend();
   updateSkipExplainer();
   drawResolutionLadder();
+  syncLegendPanelHeight();
 
 }
 
@@ -710,6 +730,15 @@ function drawSkipConnections() {
   svg.style.height = wrapRect.height + 'px';
   svg.innerHTML = '';
 
+  const nPairs = SKIP_PAIRS.length;
+  const firstEnc = $(`stage-${SKIP_PAIRS[0]?.enc}`);
+  const firstEncRect = firstEnc ? firstEnc.getBoundingClientRect() : null;
+  const baselineY = firstEncRect ? (firstEncRect.top - wrapRect.top + 8) : 56;
+  // Keep label apexes safely within the padded top area of .unet-wrap
+  const outerArc = Math.max(52, Math.min(96, baselineY - 18));
+  const innerArc = Math.max(28, outerArc - 36);
+  const arcRange = Math.max(0, outerArc - innerArc);
+
   SKIP_PAIRS.forEach((pair, pairIdx) => {
     const { enc, dec, color, label } = pair;
     const encEl = $(`stage-${enc}`);
@@ -721,11 +750,11 @@ function drawSkipConnections() {
 
     const x1 = encR.left + encR.width  / 2 - wrapRect.left;
     const x2 = decR.left + decR.width  / 2 - wrapRect.left;
-    const y   = encR.top  - wrapRect.top + 8;
+    const y   = baselineY;
     const midX = (x1 + x2) / 2;
-    // Outermost pair (enc-1↔dec-1, pairIdx=0) gets the tallest arc;
-    // innermost (enc-3↔dec-3, pairIdx=2) gets the shortest.
-    const arcH = 24 + (SKIP_PAIRS.length - 1 - pairIdx) * 20; // [24, 44, 64]
+    // Outermost pair gets tallest arc; innermost gets shortest.
+    const t = nPairs > 1 ? (nPairs - 1 - pairIdx) / (nPairs - 1) : 0;
+    const arcH = Math.round(innerArc + t * arcRange);
 
     const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
     path.setAttribute('d', `M ${x1} ${y} Q ${midX} ${y - arcH} ${x2} ${y}`);
@@ -737,12 +766,25 @@ function drawSkipConnections() {
     path.setAttribute('id', `skip-path-${pairIdx}`);
     svg.appendChild(path);
 
+    // Background rect so label is legible over arc lines
+    const labelY = y - arcH - 8;
+    const textW  = label.length * 5.6 + 12;
+    const bg = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+    bg.setAttribute('x', midX - textW / 2);
+    bg.setAttribute('y', labelY - 11);
+    bg.setAttribute('width', textW);
+    bg.setAttribute('height', 14);
+    bg.setAttribute('rx', '2');
+    bg.setAttribute('fill', '#f9f8f4');
+    bg.setAttribute('opacity', pair.active ? '0.9' : '0.15');
+    svg.appendChild(bg);
+
     // Resolution label at arc apex
     const txt = document.createElementNS('http://www.w3.org/2000/svg', 'text');
     txt.setAttribute('x', midX);
-    txt.setAttribute('y', y - arcH - 4);
+    txt.setAttribute('y', labelY);
     txt.setAttribute('text-anchor', 'middle');
-    txt.setAttribute('font-size', '9');
+    txt.setAttribute('font-size', '10');
     txt.setAttribute('font-family', 'IBM Plex Mono, monospace');
     txt.setAttribute('fill', color);
     txt.setAttribute('opacity', pair.active ? '1' : '0.2');
@@ -814,14 +856,14 @@ function drawSegOutputClassic() {
     if (isBodyPix) {
       if (cls >= 0 && cls < BODY_PARTS.length) {
         [r, g, b] = BODY_PARTS[cls].color;
-        a = hideBg ? 255 : Math.round(blendAlpha * 230);
+        a = Math.round(blendAlpha * 230);
         if (isolatedClass !== null && cls !== isolatedClass) { r = 100; g = 100; b = 100; a = 80; }
       } else {
         a = 0;
       }
     } else {
       if (cls === 0) {
-        a = hideBg ? 0 : Math.round(blendAlpha * 60); r = 0; g = 0; b = 0;
+        a = Math.round(blendAlpha * 60); r = 0; g = 0; b = 0;
       } else if (cls < currentPalette.length) {
         [r, g, b] = currentPalette[cls].color;
         a = Math.round(blendAlpha * 230);
@@ -881,19 +923,11 @@ $('blend-slider').addEventListener('input', e => {
   drawSegOutput();
 });
 
-// Hide background toggle
-let hideBgOn = false;
-$('hide-bg-btn').addEventListener('click', () => {
-  hideBgOn = !hideBgOn;
-  hideBg = hideBgOn;
-  $('hide-bg-btn').classList.toggle('active-warm', hideBgOn);
-  drawSegOutput();
-});
-
 // View mode radio buttons (Improvement 3)
 document.querySelectorAll('input[name="view-mode"]').forEach(radio => {
   radio.addEventListener('change', e => {
     outputViewMode = e.target.value;
+    updateOutputModeBlurb();
     drawSegOutput();
   });
 });
@@ -1102,6 +1136,40 @@ $('toggle-skip-btn').addEventListener('click', () => {
   if (lastSegIdx) redrawSkipExplainerRight();
 });
 
+// Dynamic decoder description + header mode hint (both update on mode switch)
+const DECODER_LEDE_TEXT = {
+  deeplab: '<span class="model-label">Decoder:</span>DeepLab v3+ with atrous spatial pyramid pooling — predicts one of <strong>150 ADE20K scene categories</strong> per pixel.',
+  bodypix:  '<span class="model-label">Decoder:</span>BodyPix v2 lightweight decoder — predicts one of <strong>24 human body-part labels</strong> per pixel.',
+};
+const MODE_HINT_TEXT = {
+  deeplab: 'Switch decoder using the buttons above\nCurrent · DeepLab v3+ · 150 scene categories',
+  bodypix:  'Switch decoder using the buttons above\nCurrent · BodyPix v2 · 24 body-part labels',
+};
+
+// dec-0 (Output Mask) metadata varies by mode — update it and its DOM label in sync
+const DEC0_META = {
+  deeplab: { res: '384×384×150', desc: 'Full-resolution segmentation map. Each pixel carries a 150-class probability vector; argmax gives the ADE20K scene-category label — wall, sky, tree, car, and 146 more.' },
+  bodypix:  { res: '384×384×24',  desc: 'Full-resolution segmentation map. Each pixel carries a 24-class probability score; argmax gives the BodyPix body-part label — head, left arm, torso, right leg, and so on.' },
+};
+
+function updateDecoderLede() {
+  const lede = $('decoder-lede');
+  if (lede) lede.innerHTML = DECODER_LEDE_TEXT[currentMode] || '';
+  const hint = $('mode-hint');
+  if (hint) hint.innerHTML = MODE_HINT_TEXT[currentMode].replace('\n', '<br>') || '';
+
+  // Keep dec-0 stage res + description in sync with active decoder
+  const dec0stage = UNET_STAGES.find(s => s.id === 'dec-0');
+  if (dec0stage) {
+    const meta = DEC0_META[currentMode];
+    dec0stage.res  = meta.res;
+    dec0stage.desc = meta.desc;
+    // Update the res label in the diagram card if it exists
+    const resEl = document.querySelector('#stage-dec-0 .stage-res');
+    if (resEl) resEl.textContent = meta.res;
+  }
+}
+
 // ============================================================
 // INPUT IMAGE HANDLING
 // ============================================================
@@ -1273,12 +1341,24 @@ function setStatus(kind, text) {
   $('status-text').textContent = text;
 }
 
+// Keep the legend panel constrained to the output panel height so
+// class entries scroll inside the panel instead of stretching the row.
+function syncLegendPanelHeight() {
+  const outputPanel = document.querySelector('.output-panel');
+  const legendPanel = document.querySelector('.legend-panel');
+  if (!outputPanel || !legendPanel) return;
+  legendPanel.style.height = `${outputPanel.offsetHeight}px`;
+}
+
 // ============================================================
 // BOOT  (placed last so every const / function is initialised)
 // ============================================================
 (async function main() {
   buildUNetDiagram();
+  updateDecoderLede();
+  updateOutputModeBlurb();
   buildPresets(); // fire-and-forget — thumbnails render while models download
+  syncLegendPanelHeight();
 
   // Wait for TF.js to pick a backend, with a hard timeout fallback.
   const raceResult = await Promise.race([
@@ -1303,4 +1383,7 @@ function setStatus(kind, text) {
   selectStage('enc-0');
   $('sdp-name').textContent = `${UNET_STAGES[0].label} — ${UNET_STAGES[0].res}`;
   $('sdp-body').textContent = UNET_STAGES[0].desc;
+  syncLegendPanelHeight();
 })().catch(err => console.error('[boot] FATAL:', err));
+
+window.addEventListener('resize', syncLegendPanelHeight);

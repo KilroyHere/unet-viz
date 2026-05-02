@@ -35,7 +35,7 @@
     <div>
       <span class="eyebrow">Interactive demo · semantic segmentation</span>
       <h1 class="title">What does a <em>U-Net</em> see?</h1>
-      <p class="lede">Upload any photo (or use your webcam) and watch a real segmentation network label every pixel across <strong>150 scene categories</strong>. Explore the full encoder → bottleneck → decoder pipeline, see why skip connections restore spatial detail, and switch to BodyPix mode to segment your own body parts.</p>
+      <p class="lede">Upload a photo (or use your webcam) and watch the model assign a label to every pixel. Trace the full encoder → bottleneck → decoder pipeline, then switch decoders to compare broad scene understanding (ADE20K, 150 classes) with fine-grained human-part segmentation (BodyPix), and see how skip connections recover spatial detail.</p>
     </div>
     <div class="header-right">
       <!-- Mode toggle -->
@@ -50,6 +50,7 @@
         </button>
       </div>
       <div class="status" id="status"><span class="dot"></span><span id="status-text">Loading…</span></div>
+      <p class="mode-hint" id="mode-hint"></p>
     </div>
   </header>
 
@@ -57,8 +58,12 @@
   <div class="unet-section">
     <div class="section-head">
       <div>
+        <p class="unet-intro">A <strong>U-Net</strong> pairs a contracting <strong>encoder</strong> — which progressively downsamples the image into abstract feature representations — with an expanding <strong>decoder</strong> that reconstructs full-resolution predictions. At every spatial scale, a <strong>skip connection</strong> bridges the two paths directly, giving the decoder access to the fine spatial detail that pooling destroys. Originally designed for biomedical image segmentation (Ronneberger et al., 2015), the architecture now underpins modern scene and body segmentation models.</p>
         <h2>Encoder → Bottleneck → Decoder</h2>
-        <p class="section-lede">The encoder (left, blue) compresses the image into abstract features — resolution shrinks, channels grow. The decoder (right, orange) expands back to full resolution. Curved arcs are <strong>skip connections</strong> that pass encoder detail directly to the decoder at each scale.</p>
+        <p class="model-line">
+          <span class="model-label">Encoder: </span>MobileNetV2 backbone pretrained on ImageNet — depthwise-separable convolutions compress 384×384×3 input to a 24×24×320 bottleneck across four resolution stages.</p>
+        <p class="model-line" id="decoder-lede"></p>
+
       </div>
       <div class="stage-badges">
         <span class="badge enc-badge">Encoder ↓ downsamples</span>
@@ -75,6 +80,10 @@
       </div>
       <!-- SVG drawn over the stages to show skip connection arcs -->
       <svg class="skip-svg" id="skip-svg" aria-hidden="true"></svg>
+    </div>
+
+    <div class="stage-hint">
+      Tip: click any stage to inspect it. Click encoder or bottleneck stages to browse different feature channels.
     </div>
 
     <!-- Clicked-stage description panel -->
@@ -123,11 +132,11 @@
         <label class="view-radio"><input type="radio" name="view-mode" value="confidence"> Confidence</label>
         <label class="view-radio"><input type="radio" name="view-mode" value="entropy"> Entropy</label>
       </div>
+      <div class="output-mode-blurb" id="output-mode-blurb"></div>
       <div class="blend-row">
         <span class="blend-label">original</span>
         <input id="blend-slider" type="range" min="0" max="1" step="0.02" value="0.7">
         <span class="blend-label">mask</span>
-        <button class="btn small" id="hide-bg-btn" title="Toggle background class visibility">hide bg</button>
       </div>
       <div class="output-hint">Click any pixel to identify its class</div>
     </div>
@@ -209,11 +218,7 @@
         <div class="ladder-col-foot">All skips merged. Crisp pixel-level boundaries restored.</div>
       </div>
     </div>
-  </div>
-
-  <!-- ============================================ CONTROLS BAR -->
-  <div class="controls-bar">
-    <span class="kbd-hint"><kbd class="kbd">←</kbd><kbd class="kbd">→</kbd> navigate stages</span>
+    <div class="ladder-legend"><strong>EFF.</strong> = effective resolution — the approximate spatial detail available at that decoder stage before full-resolution reconstruction.</div>
   </div>
 
   <!-- ============================================ NOTES -->
@@ -228,13 +233,25 @@
     </div>
     <div class="note">
       <h4>③ ADE20K vs BodyPix</h4>
-      <p>DeepLab v3+ on ADE20K labels <strong>150 scene categories</strong> — walls, sky, vegetation, furniture, vehicles, appliances, and more. BodyPix segments 24 human body parts in real-time — try it on webcam! Both share the same encoder-decoder principle.</p>
+      <p>DeepLab v3+ on ADE20K labels 150 scene categories — walls, sky, vegetation, furniture, vehicles, appliances, and more. BodyPix segments 24 human body parts in real-time — try it on webcam! Both share the same encoder-decoder principle.</p>
     </div>
   </div>
 
+  <!-- ============================================ REFERENCES -->
+  <div class="references">
+    <h4>References</h4>
+    <ol class="ref-list">
+      <li>Ronneberger, O., Fischer, P., &amp; Brox, T. (2015). <em>U-Net: Convolutional Networks for Biomedical Image Segmentation.</em> MICCAI 2015. <a class="ref-link" href="https://arxiv.org/abs/1505.04597" target="_blank" rel="noopener">arXiv:1505.04597</a></li>
+      <li>Sandler, M., Howard, A., Zhu, M., Zhmoginov, A., &amp; Chen, L.-C. (2018). <em>MobileNetV2: Inverted Residuals and Linear Bottlenecks.</em> CVPR 2018. <a class="ref-link" href="https://arxiv.org/abs/1801.04381" target="_blank" rel="noopener">arXiv:1801.04381</a></li>
+      <li>Chen, L.-C., Zhu, Y., Papandreou, G., Schroff, F., &amp; Adam, H. (2018). <em>Encoder-Decoder with Atrous Separable Convolution for Semantic Image Segmentation</em> (DeepLab v3+). ECCV 2018. <a class="ref-link" href="https://arxiv.org/abs/1802.02611" target="_blank" rel="noopener">arXiv:1802.02611</a></li>
+      <li>Zhou, B., Zhao, H., Puig, X., Fidler, S., Barriuso, A., &amp; Torralba, A. (2017). <em>Scene Parsing through ADE20K Dataset.</em> CVPR 2017. <a class="ref-link" href="https://arxiv.org/abs/1608.05442" target="_blank" rel="noopener">arXiv:1608.05442</a></li>
+      <li>Papandreou, G. et al. (2018). <em>PersonLab: Person Pose Estimation and Instance Segmentation with a Bottom-Up, Part-Based, Geometric Embedding Model.</em> ECCV 2018. — BodyPix v2 TF.js model: <a class="ref-link" href="https://github.com/tensorflow/tfjs-models/tree/master/body-pix" target="_blank" rel="noopener">github.com/tensorflow/tfjs-models</a></li>
+    </ol>
+  </div>
+
   <div class="footnote">
-    <span>Runs fully in-browser · no server · no API key</span>
     <span>DeepLab v3+ · ADE20K (150 classes) · BodyPix v2 · MobileNetV2 · TensorFlow.js</span>
+    <span>Made with ❤️ using ☕️ and Cursor.</span>
   </div>
 
 </div><!-- /.page -->
@@ -247,7 +264,10 @@
       <span class="cm-stage-info" id="cm-stage-info"></span>
       <button class="btn small" id="cm-close">✕ close</button>
     </div>
-    <div class="cm-hint">Click a channel thumbnail to pin it as the stage's thumbnail. Sorted by mean activation.</div>
+    <div class="cm-hint">
+      Click a channel thumbnail to pin it as the stage's thumbnail. Sorted by mean activation.
+      <br>Mean activation = the average response strength of that channel across the whole feature map.
+    </div>
     <div class="cm-grid" id="cm-grid"></div>
   </div>
 </div>
